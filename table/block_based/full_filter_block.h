@@ -128,6 +128,13 @@ class FullFilterBlockReader
                         const ReadOptions& read_options) override;
   size_t ApproximateMemoryUsage() const override;
 
+  bool RangeMayExistV2(const Slice* upper_bound,
+                       const Slice& user_key_without_ts,
+                       const Comparator* comparator,
+                       const Slice* const_ikey_ptr, bool* filter_checked,
+                       bool no_io, BlockCacheLookupContext* lookup_context,
+                       const ReadOptions& read_options);
+
  private:
   bool MayMatch(const Slice& entry, GetContext* get_context,
                 BlockCacheLookupContext* lookup_context,

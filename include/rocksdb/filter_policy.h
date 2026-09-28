@@ -131,6 +131,11 @@ class FilterPolicy : public Customizable {
   // built-in FilterPolicy.
   virtual FilterBitsReader* GetFilterBitsReader(
       const Slice& /*contents*/) const = 0;
+
+  // True for range filters, whose readers can answer whether a key range
+  // may contain keys. Table iterators consult the filter on Seek only for
+  // tables built with such a policy.
+  virtual bool SupportsRange() const { return false; }
 };
 
 // Return a new filter policy that uses a bloom filter with approximately
@@ -208,5 +213,22 @@ const FilterPolicy* NewBloomFilterPolicy(
 // memory.
 FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
                                     int bloom_before_level = 0);
+
+// EXPERIMENTAL: create a Diva range filter policy. Besides point lookups, a
+// forward Seek() with ReadOptions::iterate_upper_bound set skips SST files
+// whose filter rules out any key in the range.
+// - rng_seed: randomness seed.
+// - infix_bits_per_key: the memory budget for the infix part (0 disables the
+//   filter).
+// - load_factor: the load factor for the infix store of Diva.
+// As a configuration string (in an OPTIONS file, or CreateFromString), the
+// policy is either
+//   divafilter:<infix_bits_per_key>:<load_factor>:<rng_seed>
+// which is the form an OPTIONS file records, or the short
+//   divafilter:<infix_bits_per_key>
+// which defaults the other two.
+FilterPolicy* NewDivaFilterPolicy(uint32_t rng_seed,
+                                  uint32_t infix_bits_per_key,
+                                  double load_factor = .95);
 
 }  // namespace ROCKSDB_NAMESPACE

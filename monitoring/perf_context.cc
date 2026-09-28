@@ -24,6 +24,9 @@ namespace ROCKSDB_NAMESPACE {
   defCmd(bloom_filter_useful)                  \
   defCmd(bloom_filter_full_positive)           \
   defCmd(bloom_filter_full_true_positive)      \
+  defCmd(range_filter_useful)                  \
+  defCmd(range_filter_full_positive)           \
+  defCmd(range_filter_full_true_positive)      \
   defCmd(user_key_return_count)                \
   defCmd(get_from_table_nanos)                 \
   defCmd(block_cache_hit_count)                \

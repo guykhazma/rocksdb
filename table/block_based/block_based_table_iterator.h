@@ -431,6 +431,17 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
   // we need to check and update data_block_within_upper_bound_ accordingly.
   void CheckDataBlockWithinUpperBound();
 
+  bool CheckRangeFilter(const Slice& ikey, IterDirection direction,
+                        bool* filter_checked) {
+    (void)direction;
+    if (!table_->RangeMayMatch(ikey, read_options_, &lookup_context_,
+                               filter_checked)) {
+      ResetDataIter();
+      return false;
+    }
+    return true;
+  }
+
   bool CheckPrefixMayMatch(const Slice& ikey, IterDirection direction,
                            bool* filter_checked) {
     if (need_upper_bound_check_ && direction == IterDirection::kBackward) {

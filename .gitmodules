@@ -1,0 +1,4 @@
+[submodule "third-party/Diva"]
+	path = third-party/Diva
+	url = https://github.com/guykhazma/Diva.git
+	branch = binary_trie-fixes

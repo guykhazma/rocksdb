@@ -353,6 +353,14 @@ LIB_SOURCES_ASM =
 LIB_SOURCES_C =
 endif
 
+# Wormhole sources used by the Diva range filter (third-party/Diva); built on
+# x86-64 only, see Makefile.
+DIVA_LIB_SOURCES_C = \
+  third-party/Diva/include/wormhole/kv.c                                \
+  third-party/Diva/include/wormhole/lib.c                               \
+  third-party/Diva/include/wormhole/wh.c                                \
+  third-party/Diva/include/wormhole/wh_int.c                            \
+
 WITH_FAISS_LIB_SOURCES = \
   utilities/secondary_index/faiss_ivf_index.cc                  \
 
@@ -495,6 +503,7 @@ TEST_MAIN_SOURCES =                                                     \
   db/db_basic_test.cc                                                   \
   db/db_block_cache_test.cc                                             \
   db/db_bloom_filter_test.cc                                            \
+  db/db_diva_filter_test.cc                                             \
   db/db_compaction_abort_test.cc                                        \
   db/db_compaction_filter_test.cc                                       \
   db/db_compaction_test.cc                                              \

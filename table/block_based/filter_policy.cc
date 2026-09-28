@@ -12,10 +12,12 @@
 #include <array>
 #include <atomic>
 #include <climits>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <limits>
 #include <memory>
+#include <string_view>
 
 #include "cache/cache_reservation_manager.h"
 #include "logging/logging.h"
@@ -26,6 +28,7 @@
 #include "rocksdb/utilities/object_registry.h"
 #include "rocksdb/utilities/options_type.h"
 #include "table/block_based/block_based_table_reader.h"
+#include "table/block_based/diva.h"
 #include "table/block_based/filter_policy_internal.h"
 #include "table/block_based/full_filter_block.h"
 #include "util/atomic.h"
@@ -1896,6 +1899,186 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
                                 bloom_before_level);
 }
 
+namespace {
+
+#if ROCKSDB_DIVA_SUPPORTED
+// Diva filter block: fixed64 magic followed by Diva::Serialize() output.
+constexpr uint64_t kDivaFilterMagic = 0x44495641524e4731ULL;
+
+std::string_view ToStringView(const Slice& s) {
+  return std::string_view(s.data(), s.size());
+}
+
+class DivaFilterBitsBuilder : public FilterBitsBuilder {
+ public:
+  DivaFilterBitsBuilder(uint32_t rng_seed, uint32_t infix_bits_per_key,
+                        double load_factor)
+      : rng_seed_(rng_seed),
+        infix_bits_per_key_(infix_bits_per_key),
+        load_factor_(load_factor),
+        bits_per_key_(DivaFilterPolicy::EstimateBitsPerKey(infix_bits_per_key,
+                                                           load_factor)) {
+    Reset();
+  }
+
+  // Keys arrive in sorted order and every version of a user key is added, so
+  // skip repeats of the previous key: Diva is built from distinct keys.
+  void AddKey(const Slice& key) override {
+    if (num_added_ > 0 && key == Slice(last_key_)) {
+      return;
+    }
+    last_key_.assign(key.data(), key.size());
+    filter_->BulkLoadStreaming(ToStringView(key));
+    ++num_added_;
+  }
+
+  // Prefix extractors are rejected by BlockBasedTableFactory::ValidateOptions.
+  void AddKeyAndAlt(const Slice& key, const Slice& /*alt*/) override {
+    AddKey(key);
+  }
+
+  size_t EstimateEntriesAdded() override { return num_added_; }
+
+  using FilterBitsBuilder::Finish;
+  Slice Finish(std::unique_ptr<const char[]>* buf) override {
+    if (num_added_ == 0) {
+      buf->reset();
+      Reset();
+      return Slice();
+    }
+    filter_->BulkLoadStreamingFinish();
+    const size_t size = sizeof(uint64_t) + filter_->Size();
+    std::unique_ptr<char[]> data(new char[size]);
+    EncodeFixed64(data.get(), kDivaFilterMagic);
+    filter_->Serialize(data.get() + sizeof(uint64_t));
+    const Slice result(data.get(), size);
+    buf->reset(data.release());
+    Reset();
+    return result;
+  }
+
+  size_t ApproximateNumEntries(size_t bytes) override {
+    return static_cast<size_t>(static_cast<double>(bytes) * 8 / bits_per_key_);
+  }
+
+  size_t CalculateSpace(size_t num_entries) override {
+    return static_cast<size_t>(
+        std::ceil(static_cast<double>(num_entries) * bits_per_key_ / 8));
+  }
+
+  double EstimatedFpRate(size_t /*num_entries*/, size_t /*bytes*/) override {
+    return std::pow(0.5, infix_bits_per_key_);
+  }
+
+ private:
+  void Reset() {
+    filter_ = std::make_unique<DivaRangeFilter>(
+        infix_bits_per_key_, rng_seed_, static_cast<float>(load_factor_));
+    last_key_.clear();
+    num_added_ = 0;
+  }
+
+  const uint32_t rng_seed_;
+  const uint32_t infix_bits_per_key_;
+  const double load_factor_;
+  const double bits_per_key_;
+  std::unique_ptr<DivaRangeFilter> filter_;
+  std::string last_key_;
+  size_t num_added_ = 0;
+};
+
+class DivaFilterBitsReader : public FilterBitsReader {
+ public:
+  explicit DivaFilterBitsReader(const Slice& contents)
+      : filter_(contents.data() + sizeof(uint64_t)) {}
+
+  bool MayMatch(const Slice& key) override {
+    return filter_.PointQuery(ToStringView(key));
+  }
+  using FilterBitsReader::MayMatch;
+
+  bool supportsRange() override { return true; }
+
+  bool RangeMayMatch(const Slice& start, const Slice& end) override {
+    if (end.empty()) {
+      return true;
+    }
+    if (end.compare(start) < 0) {
+      return false;
+    }
+    return filter_.RangeQuery(ToStringView(start), ToStringView(end));
+  }
+
+ private:
+  DivaRangeFilter filter_;
+};
+#endif  // ROCKSDB_DIVA_SUPPORTED
+
+}  // namespace
+
+DivaFilterPolicy::DivaFilterPolicy(uint32_t rng_seed,
+                                   uint32_t infix_bits_per_key,
+                                   double load_factor)
+    : rng_seed_(rng_seed),
+      infix_bits_per_key_(std::min(infix_bits_per_key, uint32_t{32})),
+      load_factor_(load_factor > 0 && load_factor <= 1 ? load_factor : 0.95) {}
+
+double DivaFilterPolicy::EstimateBitsPerKey(uint32_t infix_bits_per_key,
+                                            double load_factor) {
+  // Diva samples about one boundary key per 1024 keys, costing ~94 bits of
+  // structure plus the key itself. Keys are assumed to average this many
+  // bytes: the term is a small part of the total (0.15 bits/key at 8 bytes
+  // against ~11.5 for the rest at 10 infix bits), and it feeds only the size
+  // estimate an SST file keeps while being built, never Diva itself. A
+  // workload whose keys are far longer just gets a slightly low estimate.
+  constexpr double kAverageKeySizeBytes = 8;
+  // Infix store, occupieds bitmap, and the sampled keys.
+  return infix_bits_per_key / load_factor + 1 +
+         (94 + kAverageKeySizeBytes * 8) / 1024;
+}
+
+const char* DivaFilterPolicy::kClassName() { return "divafilter"; }
+const char* DivaFilterPolicy::kNickName() { return "rocksdb.DivaFilter"; }
+
+// Carries every constructor argument, so an OPTIONS file round-trips back to
+// an equivalent policy. See RegisterBuiltinFilterPolicies().
+std::string DivaFilterPolicy::GetId() const {
+  return std::string(kClassName()) + ":" + std::to_string(infix_bits_per_key_) +
+         ":" + std::to_string(load_factor_) + ":" + std::to_string(rng_seed_);
+}
+
+bool DivaFilterPolicy::IsSupported() { return ROCKSDB_DIVA_SUPPORTED; }
+
+FilterBitsBuilder* DivaFilterPolicy::GetBuilderWithContext(
+    const FilterBuildingContext& /*context*/) const {
+#if ROCKSDB_DIVA_SUPPORTED
+  if (infix_bits_per_key_ != 0) {
+    return new DivaFilterBitsBuilder(rng_seed_, infix_bits_per_key_,
+                                     load_factor_);
+  }
+#endif  // ROCKSDB_DIVA_SUPPORTED
+  return nullptr;
+}
+
+FilterBitsReader* DivaFilterPolicy::GetFilterBitsReader(
+    const Slice& contents) const {
+#if ROCKSDB_DIVA_SUPPORTED
+  if (contents.size() > sizeof(uint64_t) &&
+      DecodeFixed64(contents.data()) == kDivaFilterMagic) {
+    return new DivaFilterBitsReader(contents);
+  }
+#else
+  (void)contents;
+#endif  // ROCKSDB_DIVA_SUPPORTED
+  return new AlwaysTrueFilter();
+}
+
+FilterPolicy* NewDivaFilterPolicy(uint32_t rng_seed,
+                                  uint32_t infix_bits_per_key,
+                                  double load_factor) {
+  return new DivaFilterPolicy(rng_seed, infix_bits_per_key, load_factor);
+}
+
 FilterBuildingContext::FilterBuildingContext(
     const BlockBasedTableOptions& _table_options)
     : table_options(_table_options) {}
@@ -1996,6 +2179,38 @@ static int RegisterBuiltinFilterPolicies(ObjectLibrary& library,
         double bits_per_key = ParseDouble(vals[1]);
         int bloom_before_level = ParseInt(vals[2]);
         guard->reset(NewRibbonFilterPolicy(bits_per_key, bloom_before_level));
+        return guard->get();
+      });
+  // Short form, e.g. "divafilter:10": infix bits only, the rest defaulted.
+  library.AddFactory<const FilterPolicy>(
+      FilterPatternEntryWithBits(DivaFilterPolicy::kClassName())
+          .AnotherName(DivaFilterPolicy::kNickName()),
+      [](const std::string& uri, std::unique_ptr<const FilterPolicy>* guard,
+         std::string* /* errmsg */) {
+        const std::vector<std::string> vals = StringSplit(uri, ':');
+        guard->reset(
+            NewDivaFilterPolicy(DivaFilterPolicy::kDefaultRngSeed,
+                                static_cast<uint32_t>(ParseDouble(vals[1]))));
+        return guard->get();
+      });
+  // Matches DivaFilterPolicy::GetId(): every constructor argument, in the
+  // order the id writes them. A full id cannot match the short form above,
+  // which requires its whole remainder to be one number. Registered even
+  // where Diva is unavailable, so an OPTIONS file still loads; opening the
+  // DB is what reports that.
+  library.AddFactory<const FilterPolicy>(
+      ObjectLibrary::PatternEntry(DivaFilterPolicy::kClassName(), false)
+          .AnotherName(DivaFilterPolicy::kNickName())
+          .AddNumber(":", true)   // infix_bits_per_key
+          .AddNumber(":", false)  // load_factor
+          .AddNumber(":", true),  // rng_seed
+      [](const std::string& uri, std::unique_ptr<const FilterPolicy>* guard,
+         std::string* /* errmsg */) {
+        const std::vector<std::string> vals = StringSplit(uri, ':');
+        guard->reset(NewDivaFilterPolicy(
+            static_cast<uint32_t>(ParseInt(vals[3])) /* rng_seed */,
+            static_cast<uint32_t>(ParseInt(vals[1])) /* infix_bits_per_key */,
+            ParseDouble(vals[2]) /* load_factor */));
         return guard->get();
       });
   library.AddFactory<const FilterPolicy>(

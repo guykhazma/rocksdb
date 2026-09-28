@@ -18,6 +18,7 @@
 #include "db/range_tombstone_fragmenter.h"
 #include "db/seqno_to_time_mapping.h"
 #include "file/filename.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/table_properties.h"
 #include "table/block_based/block.h"
@@ -124,6 +125,18 @@ class BlockBasedTable : public TableReader {
                            const bool need_upper_bound_check,
                            BlockCacheLookupContext* lookup_context,
                            bool* filter_checked) const;
+
+  // Whether this table's filter is a range filter (see RangeMayMatch).
+  bool HasRangeFilter() const;
+
+  // False only when the filter proves this table holds no user key in
+  // [ExtractUserKey(internal_key), *read_options.iterate_upper_bound]. The
+  // filter stores user keys, so internal_key's sequence number and type are
+  // dropped and the upper bound is treated as inclusive; both only widen the
+  // range asked about, so a key a Seek could return is never filtered out.
+  bool RangeMayMatch(const Slice& internal_key, const ReadOptions& read_options,
+                     BlockCacheLookupContext* lookup_context,
+                     bool* filter_checked) const;
 
   // Returns a new iterator over the table contents.
   // The result of NewIterator() is initially invalid (caller must
@@ -611,6 +624,8 @@ struct BlockBasedTable::Rep {
         env_options(_env_options),
         table_options(_table_opt),
         filter_policy(skip_filters ? nullptr : _table_opt.filter_policy.get()),
+        range_filter(filter_policy != nullptr &&
+                     filter_policy->SupportsRange()),
         internal_comparator(_internal_comparator),
         filter_type(FilterType::kNoFilter),
         index_type(BlockBasedTableOptions::IndexType::kBinarySearch),
@@ -628,6 +643,8 @@ struct BlockBasedTable::Rep {
   const EnvOptions& env_options;
   const BlockBasedTableOptions table_options;
   const FilterPolicy* const filter_policy;
+  // The filter can answer range queries, so Seek consults it.
+  const bool range_filter;
   const InternalKeyComparator& internal_comparator;
   Status status;
   std::unique_ptr<RandomAccessFileReader> file;

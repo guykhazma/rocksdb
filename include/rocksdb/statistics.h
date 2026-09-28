@@ -126,6 +126,20 @@ enum Tickers : uint32_t {
   // these statistics even though the filter returned a true positive.
   BLOOM_FILTER_PREFIX_TRUE_POSITIVE,
 
+  // Range filter stats. Counted per SST file whose filter answers range
+  // queries, on a forward Seek() with ReadOptions::iterate_upper_bound set;
+  // other filters and unbounded seeks are not counted.
+  // # of times the range filter has avoided a file read, i.e., it proved the
+  // file holds no key in [seek target, upper bound].
+  RANGE_FILTER_USEFUL,
+  // # of times the range filter has not avoided the read.
+  RANGE_FILTER_FULL_POSITIVE,
+  // # of times the range filter has not avoided the read and the seek then
+  // landed on a key below the upper bound (measured at the first data block
+  // the seek lands in). The gap to RANGE_FILTER_FULL_POSITIVE is the
+  // filter's false positives.
+  RANGE_FILTER_FULL_TRUE_POSITIVE,
+
   // # persistent cache hit
   PERSISTENT_CACHE_HIT,
   // # persistent cache miss

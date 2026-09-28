@@ -2180,6 +2180,51 @@ BlockBasedTable::PartitionedIndexIteratorState::NewSecondaryIterator(
       rep->user_defined_timestamps_persisted);
 }
 
+bool BlockBasedTable::HasRangeFilter() const {
+  return rep_->range_filter &&
+         rep_->filter_type == Rep::FilterType::kFullFilter;
+}
+
+bool BlockBasedTable::RangeMayMatch(const Slice& internal_key,
+                                    const ReadOptions& read_options,
+                                    BlockCacheLookupContext* lookup_context,
+                                    bool* filter_checked) const {
+  if (!rep_->range_filter ||
+      rep_->filter_type != Rep::FilterType::kFullFilter) {
+    return true;
+  }
+
+  auto ts_sz = rep_->internal_comparator.user_comparator()->timestamp_size();
+  auto user_key_without_ts =
+      ExtractUserKeyAndStripTimestamp(internal_key, ts_sz);
+  bool may_match = true;
+
+  auto* const filter = static_cast<FullFilterBlockReader*>(rep_->filter.get());
+  *filter_checked = false;
+  if (filter != nullptr) {
+    const bool no_io = read_options.read_tier == kBlockCacheTier;
+
+    const Slice* const const_ikey_ptr = &internal_key;
+    may_match = filter->RangeMayExistV2(
+        read_options.iterate_upper_bound, user_key_without_ts,
+        rep_->internal_comparator.user_comparator(), const_ikey_ptr,
+        filter_checked, no_io, lookup_context, read_options);
+  }
+
+  // Update filter stats
+  if (*filter_checked) {
+    if (may_match) {
+      RecordTick(rep_->ioptions.stats, RANGE_FILTER_FULL_POSITIVE);
+      PERF_COUNTER_BY_LEVEL_ADD(range_filter_full_positive, 1, rep_->level);
+    } else {
+      RecordTick(rep_->ioptions.stats, RANGE_FILTER_USEFUL);
+      PERF_COUNTER_BY_LEVEL_ADD(range_filter_useful, 1, rep_->level);
+    }
+  }
+
+  return may_match;
+}
+
 // This will be broken if the user specifies an unusual implementation
 // of Options.comparator, or if the user specifies an unusual
 // definition of prefixes in BlockBasedTableOptions.filter_policy.

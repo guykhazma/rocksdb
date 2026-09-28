@@ -31,6 +31,7 @@
 #include "rocksdb/utilities/options_type.h"
 #include "table/block_based/block_based_table_builder.h"
 #include "table/block_based/block_based_table_reader.h"
+#include "table/block_based/filter_policy_internal.h"
 #include "table/format.h"
 #include "util/mutexlock.h"
 #include "util/string_util.h"
@@ -631,6 +632,28 @@ TableBuilder* BlockBasedTableFactory::NewTableBuilder(
 
 Status BlockBasedTableFactory::ValidateOptions(
     const DBOptions& db_opts, const ColumnFamilyOptions& cf_opts) const {
+  if (table_options_.filter_policy != nullptr &&
+      table_options_.filter_policy->SupportsRange()) {
+    if (!DivaFilterPolicy::IsSupported()) {
+      return Status::NotSupported(
+          "Diva filter is not available in this build (needs x86-64 with "
+          "SSE4.2, POPCNT, BMI, BMI2 and LZCNT)");
+    }
+    if (cf_opts.comparator != BytewiseComparator()) {
+      return Status::NotSupported(
+          "Diva filter requires BytewiseComparator (no user-defined "
+          "timestamps)");
+    }
+    if (cf_opts.prefix_extractor != nullptr ||
+        !table_options_.whole_key_filtering) {
+      return Status::NotSupported(
+          "Diva filter requires whole_key_filtering and no prefix_extractor");
+    }
+    if (table_options_.partition_filters) {
+      return Status::NotSupported(
+          "Diva filter does not support partition_filters");
+    }
+  }
   if (table_options_.index_type == BlockBasedTableOptions::kHashSearch &&
       cf_opts.prefix_extractor == nullptr) {
     return Status::InvalidArgument(

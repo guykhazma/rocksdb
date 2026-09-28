@@ -80,6 +80,17 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
   is_at_first_key_from_index_ = false;
   seek_stat_state_ = kNone;
   bool filter_checked = false;
+  // Bounded seeks on tables with a range filter check it before the prefix
+  // filter. Unbounded seeks and other tables skip the check entirely.
+  if (target && read_options_.iterate_upper_bound != nullptr &&
+      table_->HasRangeFilter() &&
+      !CheckRangeFilter(*target, IterDirection::kForward, &filter_checked)) {
+    ResetDataIter();
+    RecordTick(table_->GetStatistics(), is_last_level_
+                                            ? LAST_LEVEL_SEEK_FILTERED
+                                            : NON_LAST_LEVEL_SEEK_FILTERED);
+    return;
+  }
   if (target &&
       !CheckPrefixMayMatch(*target, IterDirection::kForward, &filter_checked)) {
     ResetDataIter();
@@ -184,6 +195,15 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
 
     if (target) {
       block_iter_.Seek(*target);
+      // If we found a valid key and it's in our range, record TRUE_POSITIVE
+      if (filter_checked && block_iter_.Valid() &&
+          (!read_options_.iterate_upper_bound ||
+           user_comparator_.Compare(block_iter_.user_key(),
+                                    *read_options_.iterate_upper_bound) < 0)) {
+        RecordTick(table_->GetStatistics(), RANGE_FILTER_FULL_TRUE_POSITIVE);
+        PERF_COUNTER_BY_LEVEL_ADD(range_filter_full_true_positive, 1,
+                                  table_->get_rep()->level);
+      }
     } else {
       block_iter_.SeekToFirst();
     }

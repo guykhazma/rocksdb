@@ -41,6 +41,14 @@ struct PerfContextByLevelBase {
   // exist.
   uint64_t bloom_filter_full_true_positive = 0;
 
+  // Range filter stats, per level. These apply to bounded forward seeks; see
+  // the RANGE_FILTER_* tickers in statistics.h for what each one counts.
+  // Recording them needs both SetPerfLevel(kEnableCount) or higher and
+  // EnablePerLevelPerfContext(), and costs a map lookup per record.
+  uint64_t range_filter_useful = 0;
+  uint64_t range_filter_full_positive = 0;
+  uint64_t range_filter_full_true_positive = 0;
+
   // total number of user key returned (only include keys that are found, does
   // not include keys that are deleted or merged without a final put
   uint64_t user_key_return_count = 0;

@@ -526,6 +526,18 @@ ifeq ($(HAVE_POWER8),1)
 LIB_OBJECTS += $(patsubst %.c, $(OBJ_DIR)/%.o, $(LIB_SOURCES_C))
 LIB_OBJECTS += $(patsubst %.S, $(OBJ_DIR)/%.o, $(LIB_SOURCES_ASM))
 endif
+ifeq ($(MACHINE),x86_64)
+LIB_OBJECTS += $(patsubst %.c, $(OBJ_DIR)/%.o, $(DIVA_LIB_SOURCES_C))
+endif
+# table/block_based/diva.h includes Diva as a system header, so the generated
+# dependency files do not list Diva's headers.
+$(OBJ_DIR)/table/block_based/filter_policy.o: \
+  $(wildcard third-party/Diva/include/*.hpp third-party/Diva/include/wormhole/*.h)
+
+# Third-party C code: no RocksDB warning flags, and Diva's options for many
+# concurrent instances (one filter per SST file).
+DIVA_WORMHOLE_CFLAGS = -w -msse4.2 -DNDEBUG -DWORMHOLE_GLOBAL_SLAB \
+  -DWORMHOLE_DISABLE_QSBR -DWORMHOLE_NO_DEBUG -DWORMHOLE_DISABLE_MLOCK
 
 ifeq ($(USE_FOLLY_LITE),1)
   LIB_OBJECTS += $(patsubst %.cpp, $(OBJ_DIR)/%.o, $(FOLLY_SOURCES))
@@ -1468,6 +1480,9 @@ db_block_cache_test: $(OBJ_DIR)/db/db_block_cache_test.o $(TEST_LIBRARY) $(LIBRA
 	$(AM_LINK)
 
 db_bloom_filter_test: $(OBJ_DIR)/db/db_bloom_filter_test.o $(TEST_LIBRARY) $(LIBRARY)
+	$(AM_LINK)
+
+db_diva_filter_test: $(OBJ_DIR)/db/db_diva_filter_test.o $(TEST_LIBRARY) $(LIBRARY)
 	$(AM_LINK)
 
 db_log_iter_test: $(OBJ_DIR)/db/db_log_iter_test.o $(TEST_LIBRARY) $(LIBRARY)
@@ -2529,6 +2544,9 @@ $(OBJ_DIR)/%.o: %.cc
 
 $(OBJ_DIR)/%.o: %.cpp
 	$(AM_V_CC)mkdir -p $(@D) && $(CXX) $(CXXFLAGS) -c $< -o $@ $(COVERAGEFLAGS)
+
+$(OBJ_DIR)/third-party/Diva/include/wormhole/%.o: third-party/Diva/include/wormhole/%.c
+	$(AM_V_CC)mkdir -p $(@D) && $(CC) $(CFLAGS) $(DIVA_WORMHOLE_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/%.o: %.c
 	$(AM_V_CC)$(CC) $(CFLAGS) -c $< -o $@

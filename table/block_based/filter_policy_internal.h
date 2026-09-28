@@ -120,6 +120,12 @@ class FilterBitsReader {
       may_match[i] = MayMatch(*keys[i]);
     }
   }
+
+  virtual bool supportsRange() { return false; }
+
+  virtual bool RangeMayMatch(const Slice& /*start*/, const Slice& /*end*/) {
+    return true;
+  }
 };
 
 // Base class for RocksDB built-in filter reader with
@@ -301,6 +307,44 @@ class RibbonFilterPolicy : public BloomLikeFilterPolicy {
 
  private:
   std::atomic<int> bloom_before_level_;
+};
+
+// For NewDivaFilterPolicy. The builder and reader are defined in
+// filter_policy.cc.
+class DivaFilterPolicy : public FilterPolicy {
+ public:
+  DivaFilterPolicy(uint32_t rng_seed, uint32_t infix_bits_per_key,
+                   double load_factor);
+
+  FilterBitsBuilder* GetBuilderWithContext(
+      const FilterBuildingContext&) const override;
+  FilterBitsReader* GetFilterBitsReader(const Slice& contents) const override;
+
+  static const char* kClassName();
+  const char* Name() const override { return kClassName(); }
+  static const char* kNickName();
+  const char* NickName() const override { return kNickName(); }
+  const char* CompatibilityName() const override { return kClassName(); }
+  std::string GetId() const override;
+  bool SupportsRange() const override { return true; }
+
+  // False if this build does not include Diva (it needs x86-64 with SSE4.2,
+  // POPCNT, BMI, BMI2 and LZCNT enabled at compile time).
+  static bool IsSupported();
+
+  // Approximate filter size per distinct key, in bits.
+  static double EstimateBitsPerKey(uint32_t infix_bits_per_key,
+                                   double load_factor);
+
+  // Seed for a short configuration string, as in "divafilter:10". The load
+  // factor it leaves out takes the default of NewDivaFilterPolicy().
+  static constexpr uint32_t kDefaultRngSeed = 0;
+
+ private:
+  const uint32_t rng_seed_;
+  // 0 means no filter is built.
+  const uint32_t infix_bits_per_key_;
+  const double load_factor_;
 };
 
 // For testing only, but always constructable with internal names

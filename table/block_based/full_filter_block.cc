@@ -129,6 +129,37 @@ std::unique_ptr<FilterBlockReader> FullFilterBlockReader::Create(
       new FullFilterBlockReader(table, std::move(filter_block)));
 }
 
+bool FullFilterBlockReader::RangeMayExistV2(
+    const Slice* upper_bound, const Slice& user_key_without_ts,
+    const Comparator* comparator, const Slice* const const_ikey_ptr,
+    bool* filter_checked, bool no_io, BlockCacheLookupContext* lookup_context,
+    const ReadOptions& read_options) {
+  (void)comparator;
+  (void)const_ikey_ptr;
+  (void)no_io;
+  CachableEntry<ParsedFullFilterBlock> filter_block;
+
+  const Status s = GetOrReadFilterBlock(nullptr, lookup_context, &filter_block,
+                                        read_options);
+  if (!s.ok()) {
+    IGNORE_STATUS_IF_ERROR(s);
+    return true;
+  }
+
+  assert(filter_block.GetValue());
+
+  FilterBitsReader* const filter_bits_reader =
+      filter_block.GetValue()->filter_bits_reader();
+
+  if (filter_bits_reader && filter_bits_reader->supportsRange()) {
+    *filter_checked = true;
+    Slice upper_bound_key = upper_bound ? *upper_bound : Slice();
+    return filter_bits_reader->RangeMayMatch(user_key_without_ts,
+                                             upper_bound_key);
+  }
+  return true;
+}
+
 bool FullFilterBlockReader::PrefixMayMatch(
     const Slice& prefix, const Slice* const /*const_ikey_ptr*/,
     GetContext* get_context, BlockCacheLookupContext* lookup_context,

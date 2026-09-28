@@ -1123,6 +1123,29 @@ if(USE_FOLLY_LITE)
   list(APPEND THIRDPARTY_LIBS glog)
 endif()
 
+# Wormhole sources used by the Diva range filter (third-party/Diva): x86-64
+# only, third-party C code without RocksDB's warning flags, built with Diva's
+# options for many concurrent instances (one filter per SST file).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND NOT MSVC)
+  set(DIVA_WORMHOLE_SOURCES
+    third-party/Diva/include/wormhole/kv.c
+    third-party/Diva/include/wormhole/lib.c
+    third-party/Diva/include/wormhole/wh.c
+    third-party/Diva/include/wormhole/wh_int.c)
+  if(PORTABLE MATCHES "0|OFF|NO|FALSE|N")
+    set(DIVA_WORMHOLE_ARCH "-march=native")
+  elseif(PORTABLE MATCHES "1|ON|YES|TRUE|Y")
+    set(DIVA_WORMHOLE_ARCH "-msse4.2")
+  else()
+    set(DIVA_WORMHOLE_ARCH "-march=${PORTABLE}")
+  endif()
+  set_source_files_properties(${DIVA_WORMHOLE_SOURCES} PROPERTIES
+    COMPILE_DEFINITIONS
+      "NDEBUG;WORMHOLE_GLOBAL_SLAB;WORMHOLE_DISABLE_QSBR;WORMHOLE_NO_DEBUG;WORMHOLE_DISABLE_MLOCK"
+    COMPILE_OPTIONS "-w;${DIVA_WORMHOLE_ARCH}")
+  list(APPEND SOURCES ${DIVA_WORMHOLE_SOURCES})
+endif()
+
 set(ROCKSDB_STATIC_LIB rocksdb${ARTIFACT_SUFFIX})
 set(ROCKSDB_SHARED_LIB rocksdb-shared${ARTIFACT_SUFFIX})
 
@@ -1385,6 +1408,7 @@ if(WITH_TESTS)
         db/db_with_timestamp_basic_test.cc
         db/db_block_cache_test.cc
         db/db_bloom_filter_test.cc
+        db/db_diva_filter_test.cc
         db/db_compaction_filter_test.cc
         db/db_compaction_test.cc
         db/db_compaction_abort_test.cc

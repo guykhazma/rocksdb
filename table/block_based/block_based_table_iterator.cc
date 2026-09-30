@@ -195,8 +195,12 @@ void BlockBasedTableIterator::SeekImpl(const Slice* target,
 
     if (target) {
       block_iter_.Seek(*target);
-      // If we found a valid key and it's in our range, record TRUE_POSITIVE
-      if (filter_checked && block_iter_.Valid() &&
+      // A key inside the range means the range filter's positive was true.
+      // filter_checked is shared with the prefix filter; a table has at most
+      // one filter policy, so HasRangeFilter() says which one set it. That
+      // also keeps this comparison off tables with user-defined timestamps,
+      // which a range filter rejects at open.
+      if (filter_checked && table_->HasRangeFilter() && block_iter_.Valid() &&
           (!read_options_.iterate_upper_bound ||
            user_comparator_.Compare(block_iter_.user_key(),
                                     *read_options_.iterate_upper_bound) < 0)) {

@@ -297,6 +297,37 @@ TEST_F(DBDivaFilterTest, AllZeroKeys) {
   ASSERT_EQ(Scan(std::string(8, '\0'), "a" + Key(1)).size(), 1);
 }
 
+// The seek path shares one filter_checked flag between the prefix filter and
+// the range filter. A prefix-filter check on a table with no range filter
+// must not be counted as a range-filter true positive.
+TEST_F(DBDivaFilterTest, PrefixFilterSeekIsNotARangeFilterPositive) {
+  Options options = CurrentOptions();
+  options.create_if_missing = true;
+  options.disable_auto_compactions = true;
+  options.statistics = CreateDBStatistics();
+  options.prefix_extractor.reset(NewFixedPrefixTransform(1));
+  BlockBasedTableOptions table_options;
+  table_options.filter_policy.reset(NewBloomFilterPolicy(10));
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  options_statistics_ = options.statistics;
+  Reopen(options);
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_OK(Put("a" + Key(i), "v"));
+  }
+  ASSERT_OK(Flush());
+  Pop(RANGE_FILTER_FULL_TRUE_POSITIVE);
+
+  const std::string upper = "a" + Key(50);
+  const Slice upper_bound(upper);
+  ReadOptions read_options;
+  read_options.iterate_upper_bound = &upper_bound;
+  std::unique_ptr<Iterator> iter(db_->NewIterator(read_options));
+  iter->Seek("a" + Key(10));
+  ASSERT_TRUE(iter->Valid());
+  ASSERT_OK(iter->status());
+  ASSERT_EQ(Pop(RANGE_FILTER_FULL_TRUE_POSITIVE), 0);
+}
+
 // Without iterate_upper_bound the range filter is not consulted.
 TEST_F(DBDivaFilterTest, UnboundedSeekDoesNotUseFilter) {
   OpenWithDiva();

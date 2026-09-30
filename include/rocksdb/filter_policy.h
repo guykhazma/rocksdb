@@ -227,6 +227,12 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
 // which is the form an OPTIONS file records, or the short
 //   divafilter:<infix_bits_per_key>
 // which defaults the other two.
+// Opening a DB with this policy fails with NotSupported unless:
+// - the build includes Diva (x86-64 with SSE4.2, POPCNT, BMI, BMI2 and LZCNT
+//   enabled at compile time; see DivaFilterPolicy::IsSupported());
+// - the comparator is BytewiseComparator(), so no user-defined timestamps;
+// - whole_key_filtering is set and there is no prefix_extractor;
+// - partition_filters is off.
 FilterPolicy* NewDivaFilterPolicy(uint32_t rng_seed,
                                   uint32_t infix_bits_per_key,
                                   double load_factor = .95);

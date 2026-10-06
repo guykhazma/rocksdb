@@ -16,8 +16,23 @@ ParsedFullFilterBlock::ParsedFullFilterBlock(const FilterPolicy* filter_policy,
       filter_bits_reader_(
           !block_contents_.data.empty()
               ? filter_policy->GetFilterBitsReader(block_contents_.data)
-              : nullptr) {}
+              : nullptr) {
+  // A reader that copied what it needs (Diva's) leaves the block unused:
+  // holding it would keep the filter in memory twice.
+  if (filter_bits_reader_ != nullptr &&
+      filter_bits_reader_->CanReleaseBackingFilterBlock()) {
+    block_contents_ = BlockContents();
+    block_released_ = true;
+  }
+}
 
 ParsedFullFilterBlock::~ParsedFullFilterBlock() = default;
+
+size_t ParsedFullFilterBlock::ApproximateMemoryUsage() const {
+  return block_contents_.ApproximateMemoryUsage() +
+         (filter_bits_reader_ != nullptr
+              ? filter_bits_reader_->ApproximateMemoryUsage()
+              : 0);
+}
 
 }  // namespace ROCKSDB_NAMESPACE

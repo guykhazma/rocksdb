@@ -126,6 +126,15 @@ class FilterBitsReader {
   virtual bool RangeMayMatch(const Slice& /*start*/, const Slice& /*end*/) {
     return true;
   }
+
+  // Memory the reader holds besides the filter block it was built from. When
+  // CanReleaseBackingFilterBlock() is true, this is the memory that replaces
+  // the block.
+  virtual size_t ApproximateMemoryUsage() const { return 0; }
+
+  // True if the reader keeps no pointer into the filter block it was built
+  // from, so the block can be freed once the reader exists.
+  virtual bool CanReleaseBackingFilterBlock() const { return false; }
 };
 
 // Base class for RocksDB built-in filter reader with

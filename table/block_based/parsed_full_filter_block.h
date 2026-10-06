@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cassert>
 #include <memory>
 
 #include "table/block_based/block_type.h"
@@ -26,15 +27,20 @@ class ParsedFullFilterBlock {
     return filter_bits_reader_.get();
   }
 
-  // TODO: consider memory usage of the FilterBitsReader
-  size_t ApproximateMemoryUsage() const {
-    return block_contents_.ApproximateMemoryUsage();
+  // The block (unless released) and what the reader holds besides it.
+  size_t ApproximateMemoryUsage() const;
+
+  // A reader that released the block owns everything it needs.
+  bool own_bytes() const {
+    return block_released_ || block_contents_.own_bytes();
   }
 
-  bool own_bytes() const { return block_contents_.own_bytes(); }
-
-  // For TypedCacheInterface
-  const Slice& ContentSlice() const { return block_contents_.data; }
+  // For TypedCacheInterface. A released block has no contents to save, so a
+  // filter whose reader releases it cannot go to a secondary cache.
+  const Slice& ContentSlice() const {
+    assert(!block_released_);
+    return block_contents_.data;
+  }
   static constexpr CacheEntryRole kCacheEntryRole =
       CacheEntryRole::kFilterBlock;
   static constexpr BlockType kBlockType = BlockType::kFilter;
@@ -42,6 +48,8 @@ class ParsedFullFilterBlock {
  private:
   BlockContents block_contents_;
   std::unique_ptr<FilterBitsReader> filter_bits_reader_;
+  // The reader kept nothing from the block, so the block was freed.
+  bool block_released_ = false;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

@@ -1990,7 +1990,17 @@ class DivaFilterBitsBuilder : public FilterBitsBuilder {
 class DivaFilterBitsReader : public FilterBitsReader {
  public:
   explicit DivaFilterBitsReader(const Slice& contents)
-      : filter_(contents.data() + sizeof(uint64_t)) {}
+      : filter_(contents.data() + sizeof(uint64_t)),
+        memory_bytes_(contents.size()) {}
+
+  // Deserializing copies every infix store, and the wormhole tree copies the
+  // boundary keys, so nothing points into the filter block afterwards.
+  bool CanReleaseBackingFilterBlock() const override { return true; }
+
+  // The copied infix stores take about what the block did (the block's keys
+  // and status words against the allocator's rounding of the stores); the
+  // wormhole tree over the boundary keys comes on top and is not counted.
+  size_t ApproximateMemoryUsage() const override { return memory_bytes_; }
 
   bool MayMatch(const Slice& key) override {
     return filter_.PointQuery(ToStringView(key));
@@ -2011,6 +2021,7 @@ class DivaFilterBitsReader : public FilterBitsReader {
 
  private:
   DivaRangeFilter filter_;
+  const size_t memory_bytes_;
 };
 #endif  // ROCKSDB_DIVA_SUPPORTED
 

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,10 @@
 #include "rocksdb/statistics.h"
 #include "rocksdb/table.h"
 #include "rocksdb/utilities/options_util.h"
+#include "memory/memory_allocator_impl.h"
 #include "table/block_based/filter_policy_internal.h"
+#include "table/block_based/parsed_full_filter_block.h"
+#include "table/format.h"
 #include "util/random.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -77,6 +81,49 @@ TEST_F(DivaFilterPolicyTest, PointAndRangeQueries) {
   ASSERT_FALSE(reader->RangeMayMatch("grape", "apple"));
   // No end: the range is unbounded.
   ASSERT_TRUE(reader->RangeMayMatch("zzz", Slice()));
+}
+
+// A table reader parses a filter block it owns. The Diva reader copies what it
+// needs, so the parsed block frees the filter block and counts the reader's
+// memory in its place, and still answers queries; a Bloom reader reads the
+// block in place, so the block stays.
+TEST_F(DivaFilterPolicyTest, ParsedBlockReleasesFilterBlock) {
+  Random rnd(17);
+  std::set<std::string> distinct;
+  while (distinct.size() < 3000) {
+    distinct.insert(rnd.RandomString(1 + static_cast<int>(rnd.Uniform(20))));
+  }
+  const std::vector<std::string> keys(distinct.begin(), distinct.end());
+  const auto parse = [&](const FilterPolicy& policy) {
+    Build(policy, keys);
+    CacheAllocationPtr owned = AllocateBlock(filter_.size(), nullptr);
+    memcpy(owned.get(), filter_.data(), filter_.size());
+    return std::make_unique<ParsedFullFilterBlock>(
+        &policy, BlockContents(std::move(owned), filter_.size()));
+  };
+
+  const auto diva = NewDiva(kInfixBitsPerKey);
+  auto parsed = parse(*diva);
+  ASSERT_TRUE(parsed->own_bytes());
+  // The block's bytes are gone (an empty BlockContents still counts its own
+  // size); in their place is the reader's estimate, the size of the block it
+  // replaced.
+  ASSERT_EQ(parsed->ApproximateMemoryUsage(),
+            BlockContents().ApproximateMemoryUsage() + filter_.size());
+  for (const auto& key : keys) {
+    ASSERT_TRUE(parsed->filter_bits_reader()->MayMatch(key));
+  }
+  ASSERT_TRUE(parsed->filter_bits_reader()->RangeMayMatch(keys.front(),
+                                                         keys.back()));
+
+  const std::shared_ptr<const FilterPolicy> bloom(NewBloomFilterPolicy(10));
+  auto bloom_parsed = parse(*bloom);
+  ASSERT_TRUE(bloom_parsed->own_bytes());
+  ASSERT_GE(bloom_parsed->ApproximateMemoryUsage(), filter_.size());
+  ASSERT_EQ(bloom_parsed->ContentSlice().size(), filter_.size());
+  for (const auto& key : keys) {
+    ASSERT_TRUE(bloom_parsed->filter_bits_reader()->MayMatch(key));
+  }
 }
 
 TEST_F(DivaFilterPolicyTest, UnusableContentsMatchEverything) {

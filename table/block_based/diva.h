@@ -30,7 +30,7 @@
 namespace ROCKSDB_NAMESPACE {
 
 using DivaRangeFilter =
-    ::diva::Diva<::diva::DivaType::BinaryTrie, ::diva::PayloadType::None>;
+    ::diva::Diva<::diva::DivaType::Standard, ::diva::PayloadType::None>;
 
 }  // namespace ROCKSDB_NAMESPACE
 

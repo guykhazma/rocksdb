@@ -19,6 +19,7 @@ namespace ROCKSDB_NAMESPACE {
 class Arena;
 class ArenaWrappedDBIter;
 class InternalKeyComparator;
+class Statistics;
 
 template <class TValue>
 class InternalIteratorBase;
@@ -50,9 +51,13 @@ class MergeIteratorBuilder {
  public:
   // comparator: the comparator used in merging comparator
   // arena: where the merging iterator needs to be allocated from.
+  // deferred_seeks: see ReadOptions::deferred_seeks; its tickers go to
+  // `statistics` (may be null).
   explicit MergeIteratorBuilder(const InternalKeyComparator* comparator,
                                 Arena* arena, bool prefix_seek_mode = false,
-                                const Slice* iterate_upper_bound = nullptr);
+                                const Slice* iterate_upper_bound = nullptr,
+                                bool deferred_seeks = false,
+                                Statistics* statistics = nullptr);
   ~MergeIteratorBuilder();
 
   // Add point key iterator `iter` to the merging iterator.

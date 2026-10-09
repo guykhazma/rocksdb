@@ -160,6 +160,24 @@ bool FullFilterBlockReader::RangeMayExistV2(
   return true;
 }
 
+bool FullFilterBlockReader::GetApproximateLowerBound(
+    const Slice& user_key_without_ts, KeyLowerBound* bound,
+    BlockCacheLookupContext* lookup_context, const ReadOptions& read_options) {
+  CachableEntry<ParsedFullFilterBlock> filter_block;
+  const Status s = GetOrReadFilterBlock(nullptr, lookup_context, &filter_block,
+                                        read_options);
+  if (!s.ok()) {
+    IGNORE_STATUS_IF_ERROR(s);
+    return false;
+  }
+  assert(filter_block.GetValue());
+  FilterBitsReader* const filter_bits_reader =
+      filter_block.GetValue()->filter_bits_reader();
+  return filter_bits_reader != nullptr &&
+         filter_bits_reader->GetApproximateLowerBound(user_key_without_ts,
+                                                      bound);
+}
+
 bool FullFilterBlockReader::PrefixMayMatch(
     const Slice& prefix, const Slice* const /*const_ikey_ptr*/,
     GetContext* get_context, BlockCacheLookupContext* lookup_context,

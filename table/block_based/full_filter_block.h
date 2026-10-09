@@ -135,6 +135,14 @@ class FullFilterBlockReader
                        bool no_io, BlockCacheLookupContext* lookup_context,
                        const ReadOptions& read_options);
 
+  // Bounds the user keys this filter holds at or after `user_key_without_ts`
+  // (see KeyLowerBound). False if the filter cannot tell, including when its
+  // block cannot be read.
+  bool GetApproximateLowerBound(const Slice& user_key_without_ts,
+                                KeyLowerBound* bound,
+                                BlockCacheLookupContext* lookup_context,
+                                const ReadOptions& read_options);
+
  private:
   bool MayMatch(const Slice& entry, GetContext* get_context,
                 BlockCacheLookupContext* lookup_context,

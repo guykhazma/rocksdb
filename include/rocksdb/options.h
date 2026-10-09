@@ -2064,6 +2064,24 @@ struct ReadOptions {
   // verified against corresponding checksums.
   bool verify_checksums = true;
 
+  // If true, a forward Seek() asks the inputs of the merge for a lower bound
+  // of their next key without reading data: L0 files and levels from their
+  // range filter. An input that is empty past the seek target, or whose next
+  // key is past iterate_upper_bound, is not sought; one whose next key is
+  // provably after the smallest key found so far is sought only once the
+  // scan gets there. Results are the same either way. Applies only to DB
+  // iterators of column families whose table uses a range filter (which
+  // implies ignore_range_deletions, the bytewise comparator, no user
+  // timestamps and no prefix seek) and not to MultiScan; others seek every
+  // input.
+  bool deferred_seeks = true;
+
+  // If false, SST files ignore their range filter on reads, as with a filter
+  // that answers point lookups only: no bounded-seek range check, and
+  // deferred_seeks skips only levels whose files all end before the seek
+  // target. Point lookups still use the filter.
+  bool lsm_range_filter = true;
+
   // Should the "data block"/"index block" read for this iteration be placed in
   // block cache?
   // Callers may wish to set this field to false for bulk scans.

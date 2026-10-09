@@ -138,6 +138,10 @@ class BlockBasedTable : public TableReader {
                      BlockCacheLookupContext* lookup_context,
                      bool* filter_checked) const;
 
+  bool GetApproximateLowerBound(const ReadOptions& read_options,
+                                const Slice& user_key,
+                                KeyLowerBound* bound) const override;
+
   // Returns a new iterator over the table contents.
   // The result of NewIterator() is initially invalid (caller must
   // call one of the Seek methods on the iterator before using it).

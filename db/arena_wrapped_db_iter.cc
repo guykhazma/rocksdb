@@ -51,6 +51,13 @@ void ArenaWrappedDBIter::Init(
     read_options_.async_io = false;
   }
   read_options_.total_order_seek |= ioptions.prefix_seek_opt_in_only;
+  // Tables with a range filter do not support range deletions (DeleteRange
+  // is rejected), so their iterators never look for range tombstones. This
+  // also lets MergingIterator defer seeks, which requires that no child
+  // carries a range tombstone iterator.
+  if (!mutable_cf_options.table_factory->IsDeleteRangeSupported()) {
+    read_options_.ignore_range_deletions = true;
+  }
 
   db_iter_ = DBIter::NewIter(
       env, read_options_, ioptions, mutable_cf_options,

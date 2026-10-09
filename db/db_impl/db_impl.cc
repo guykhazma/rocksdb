@@ -84,6 +84,7 @@
 #include "rocksdb/convenience.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/stats_history.h"
@@ -2245,13 +2246,21 @@ InternalIterator* DBImpl::NewInternalIterator(
   assert(arena != nullptr);
   auto prefix_extractor =
       super_version->mutable_cf_options.prefix_extractor.get();
+  // Only a range filter gives the merge bounds to defer seeks by. Other column
+  // families keep the regular Seek(), which batches asynchronous reads.
+  const auto* table_options = super_version->mutable_cf_options.table_factory
+                                  ->GetOptions<BlockBasedTableOptions>();
+  const bool deferred_seeks = read_options.deferred_seeks &&
+                              table_options != nullptr &&
+                              table_options->filter_policy != nullptr &&
+                              table_options->filter_policy->SupportsRange();
   // Need to create internal iterator from the arena.
   MergeIteratorBuilder merge_iter_builder(
       &cfd->internal_comparator(), arena,
       // FIXME? It's not clear what interpretation of prefix seek is needed
       // here, and no unit test cares about the value provided here.
       !read_options.total_order_seek && prefix_extractor != nullptr,
-      read_options.iterate_upper_bound);
+      read_options.iterate_upper_bound, deferred_seeks, cfd->ioptions().stats);
   // Collect iterator for mutable memtable
   auto mem_iter = super_version->mem->NewIterator(
       read_options, super_version->GetSeqnoToTimeMapping(), arena,

@@ -572,6 +572,13 @@ DEFINE_double(bloom_bits, 10,
               "Bloom filter bits per key. "
               "Negative means use default settings.");
 
+DEFINE_bool(use_diva_filter, false,
+            "Use the Diva range filter, with bloom_bits as its infix bits per "
+            "key. Needs prefix_size < 0, no DeleteRange, no user timestamps, "
+            "no partition_filters and no secondary cache. Falls back to the "
+            "Bloom filter where "
+            "the build has no Diva.");
+
 DEFINE_int32(
     bloom_before_level, 999,
     "Use Bloom filter on levels below specified and Ribbon beginning on level "
@@ -879,6 +886,12 @@ DEFINE_int32(test_ingest_standalone_range_deletion_one_in, 0,
 DEFINE_bool(allow_unprepared_value,
             ROCKSDB_NAMESPACE::ReadOptions().allow_unprepared_value,
             "Allow lazy loading of values for range scans");
+
+DEFINE_bool(deferred_seeks, ROCKSDB_NAMESPACE::ReadOptions().deferred_seeks,
+            "ReadOptions::deferred_seeks");
+
+DEFINE_bool(lsm_range_filter, ROCKSDB_NAMESPACE::ReadOptions().lsm_range_filter,
+            "ReadOptions::lsm_range_filter");
 
 DEFINE_bool(track_and_verify_wals,
             ROCKSDB_NAMESPACE::Options().track_and_verify_wals,

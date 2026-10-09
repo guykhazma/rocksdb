@@ -1241,7 +1241,75 @@ class LevelIterator final : public InternalIterator {
     }
   }
 
+  // The bound of the first file holding a key >= user_key: later files of a
+  // sorted level hold only larger keys. L0 files overlap, so L0 takes the
+  // smallest bound of all its files. Files are not opened for data, only
+  // their filters are read.
+  bool GetApproximateLowerBound(const Slice& user_key,
+                                KeyLowerBound* bound) const override {
+    if (skip_filters_) {
+      return false;
+    }
+    const size_t start =
+        level_ == 0
+            ? 0
+            : static_cast<size_t>(FindFile(
+                  icomparator_, *flevel_,
+                  InternalKey(user_key, kMaxSequenceNumber, kValueTypeForSeek)
+                      .Encode()));
+    bool found = false;
+    for (size_t i = start; i < flevel_->num_files; ++i) {
+      if (user_comparator_.CompareWithoutTimestamp(
+              ExtractUserKey(flevel_->files[i].largest_key),
+              /*a_has_ts=*/true, user_key, /*b_has_ts=*/false) < 0) {
+        continue;  // an L0 file whose keys are all smaller
+      }
+      KeyLowerBound file_bound;
+      if (!GetFileLowerBound(i, user_key, &file_bound)) {
+        return false;  // one file cannot tell, so neither can the level
+      }
+      if (file_bound.empty) {
+        continue;
+      }
+      // Padded prefixes compare like the smallest keys starting with them.
+      if (!found || Slice(file_bound.prefix).compare(bound->prefix) < 0) {
+        *bound = std::move(file_bound);
+        found = true;
+      }
+      if (level_ > 0) {
+        break;
+      }
+    }
+    if (!found) {
+      bound->empty = true;
+      bound->prefix.clear();
+      bound->known_bits = 0;
+    }
+    return true;
+  }
+
  private:
+  bool GetFileLowerBound(size_t index, const Slice& user_key,
+                         KeyLowerBound* bound) const {
+    if (file_iter_.iter() != nullptr && file_index_ == index) {
+      return file_iter_.GetApproximateLowerBound(user_key, bound);
+    }
+    const FileMetaData& meta = *flevel_->files[index].file_metadata;
+    TableCache::TypedHandle* handle = nullptr;
+    TableReader* table_reader = nullptr;
+    Status s = table_cache_->FindTable(
+        read_options_, file_options_, icomparator_, meta, &handle,
+        mutable_cf_options_, &table_reader, /*no_io=*/false, file_read_hist_,
+        skip_filters_, level_);
+    const bool known =
+        s.ok() && table_reader != nullptr &&
+        table_reader->GetApproximateLowerBound(read_options_, user_key, bound);
+    if (handle != nullptr) {
+      table_cache_->get_cache().Release(handle);
+    }
+    return known;
+  }
+
   // Return true if at least one invalid file is seen and skipped.
   bool SkipEmptyFileForward();
   void SkipEmptyFileBackward();

@@ -597,6 +597,32 @@ enum Tickers : uint32_t {
   // # of prefetch requests that were blocked waiting for memory
   PREFETCH_MEMORY_REQUESTS_BLOCKED,
 
+  // Deferred seek stats (ReadOptions::deferred_seeks). A child is one input of
+  // a DB iterator's merge that can bound its next key: an L0 file or a level
+  // below L0. SST files proven empty or past the upper bound are not sought,
+  // so the RANGE_FILTER_* stats do not count them.
+  // # of children that gave a lower bound of their next key on a forward
+  // Seek(). Each is counted in exactly one of the next four tickers.
+  DEFERRED_SEEK_BOUNDS,
+  // # of children with no key at or after the seek target: not sought.
+  DEFERRED_SEEK_EMPTY,
+  // # of children whose next key is at or past iterate_upper_bound: not
+  // sought.
+  DEFERRED_SEEK_PAST_UPPER_BOUND,
+  // # of children whose next key is after the smallest key found so far:
+  // seeking them is postponed.
+  DEFERRED_SEEK_POSTPONED,
+  // # of children sought right away.
+  DEFERRED_SEEK_IMMEDIATE,
+  // # of postponed children sought once the scan reached their bound.
+  DEFERRED_SEEK_ACTIVATED,
+  // # of postponed children sought because no other child had keys left.
+  DEFERRED_SEEK_DRAINED,
+  // # of forward Seek()s with deferred_seeks on a column family with a range
+  // filter that sought every child, because the iterator does not meet its
+  // conditions (e.g. MultiScan).
+  DEFERRED_SEEK_FALLBACK,
+
   TICKER_ENUM_MAX
 };
 

@@ -9,8 +9,13 @@
 
 #include "table/merging_iterator.h"
 
+#include <algorithm>
+
 #include "db/arena_wrapped_db_iter.h"
+#include "db/dbformat.h"
 #include "monitoring/file_read_sample.h"
+#include "monitoring/statistics_impl.h"
+#include "table/known_prefix_bits.h"
 
 namespace ROCKSDB_NAMESPACE {
 // MergingIterator uses a min/max heap to combine data from point iterators.
@@ -55,7 +60,8 @@ class MergingIterator : public InternalIterator {
   MergingIterator(const InternalKeyComparator* comparator,
                   InternalIterator** children, int n, bool is_arena_mode,
                   bool prefix_seek_mode,
-                  const Slice* iterate_upper_bound = nullptr)
+                  const Slice* iterate_upper_bound = nullptr,
+                  bool deferred_seeks = false, Statistics* statistics = nullptr)
       : is_arena_mode_(is_arena_mode),
         prefix_seek_mode_(prefix_seek_mode),
         direction_(kForward),
@@ -63,7 +69,10 @@ class MergingIterator : public InternalIterator {
         current_(nullptr),
         minHeap_(MinHeapItemComparator(comparator_)),
         pinned_iters_mgr_(nullptr),
-        iterate_upper_bound_(iterate_upper_bound) {
+        iterate_upper_bound_(iterate_upper_bound),
+        deferred_seeks_requested_(deferred_seeks),
+        statistics_(statistics),
+        postponed_(PostponedComparator(&bounds_)) {
     children_.resize(n);
     for (int i = 0; i < n; i++) {
       children_[i].level = i;
@@ -106,6 +115,16 @@ class MergingIterator : public InternalIterator {
   // tombstone iterators are added. Initializes HeapItems for range tombstone
   // iterators.
   void Finish() {
+    // Bounds compare bytewise and ignore range tombstones, which may cover
+    // keys of a child that is not sought.
+    deferred_seeks_usable_ =
+        deferred_seeks_requested_ && range_tombstone_iters_.empty() &&
+        !prefix_seek_mode_ &&
+        comparator_->user_comparator() == BytewiseComparator();
+    if (deferred_seeks_usable_) {
+      bounds_.resize(children_.size());
+      candidates_.reserve(children_.size());
+    }
     if (!range_tombstone_iters_.empty()) {
       assert(range_tombstone_iters_.size() == children_.size());
       pinned_heap_item_.resize(range_tombstone_iters_.size());
@@ -321,7 +340,14 @@ class MergingIterator : public InternalIterator {
     // first key >= target among children_ that is not covered by any range
     // tombstone.
     status_ = Status::OK();
-    SeekImpl(target);
+    if (deferred_seeks_usable_) {
+      SeekWithDeferral(target);
+    } else {
+      if (deferred_seeks_requested_) {
+        RecordTick(statistics_, DEFERRED_SEEK_FALLBACK);
+      }
+      SeekImpl(target);
+    }
     FindNextVisibleKey();
 
     direction_ = kForward;
@@ -360,6 +386,11 @@ class MergingIterator : public InternalIterator {
     // For the heap modifications below to be correct, current_ must be the
     // current top of the heap.
     assert(current_ == CurrentForward());
+    // Postponed children are sought from past the user key returned last.
+    if (!postponed_.empty()) {
+      const Slice user_key = ExtractUserKey(current_->key());
+      last_user_key_.assign(user_key.data(), user_key.size());
+    }
     // as the current points to the current record. move the iterator forward.
     current_->Next();
     if (current_->Valid()) {
@@ -372,6 +403,9 @@ class MergingIterator : public InternalIterator {
       // current stopped being valid, remove it from the heap.
       considerStatus(current_->status());
       minHeap_.pop();
+    }
+    if (!postponed_.empty()) {
+      SeekPostponedChildren(last_user_key_);
     }
     // Invariants (3) and (4) hold when after advancing current_.
     // Let k be the smallest key among children_[i].iter.key().
@@ -484,6 +518,11 @@ class MergingIterator : public InternalIterator {
   }
 
   void Prepare(const MultiScanArgs* scan_opts) override {
+    // A MultiScan child accepts only seeks to its prepared scan ranges, not
+    // the seek past the last returned key that activates a postponed child.
+    if (scan_opts != nullptr) {
+      deferred_seeks_usable_ = false;
+    }
     for (auto& child : children_) {
       child.iter.Prepare(scan_opts);
     }
@@ -600,6 +639,26 @@ class MergingIterator : public InternalIterator {
   void SeekForPrevImpl(const Slice& target, size_t starting_level = 0,
                        bool range_tombstone_reseek = false);
 
+  // Deferred seeks (ReadOptions::deferred_seeks), forward only. Seek() asks
+  // each child for a lower bound of its first key >= target (see
+  // KeyLowerBound). Children that cannot tell are sought. Of the others, a
+  // child with no such key, or whose keys are all >= iterate_upper_bound, is
+  // left invalid; the rest are taken by increasing bound, and a child whose
+  // bound is after the smallest key found so far is postponed: left invalid
+  // and kept in postponed_. Next() seeks postponed children once their bound
+  // is no longer after the smallest key, or when no child has keys left.
+  //
+  // Invariant: every key >= the seek target of a postponed child is greater
+  // than every key the merge has returned. So seeking it from just past the
+  // last returned user key finds the same keys as seeking it from the target,
+  // and no version of a returned user key is missed.
+  void SeekWithDeferral(const Slice& target);
+  // Seeks the postponed children that could hold the next key, after the
+  // merge returned a key with user key `last_user_key`.
+  void SeekPostponedChildren(const Slice& last_user_key);
+  // Seeks one child and adds it to minHeap_ if valid.
+  void SeekChild(HeapItem* child, const Slice& target);
+
   bool is_arena_mode_;
   bool prefix_seek_mode_;
   // Which direction is the iterator moving?
@@ -666,6 +725,35 @@ class MergingIterator : public InternalIterator {
   // Used to bound range tombstones. For point keys, DBIter and SSTable iterator
   // take care of boundary checking.
   const Slice* iterate_upper_bound_;
+
+  // Orders postponed children by increasing bound: the top has the smallest.
+  // Bounds are trimmed (no trailing zero known bits), so a smaller bound that
+  // is after a key implies every larger one is too.
+  class PostponedComparator {
+   public:
+    explicit PostponedComparator(const std::vector<KeyLowerBound>* bounds)
+        : bounds_(bounds) {}
+    bool operator()(size_t a, size_t b) const {
+      return Slice((*bounds_)[a].prefix).compare((*bounds_)[b].prefix) > 0;
+    }
+
+   private:
+    const std::vector<KeyLowerBound>* bounds_;
+  };
+
+  // ReadOptions::deferred_seeks, and whether this iterator can use it (set by
+  // Finish()).
+  const bool deferred_seeks_requested_;
+  bool deferred_seeks_usable_ = false;
+  Statistics* const statistics_;
+  // bounds_[i]: the lower bound children_[i] gave on the last Seek().
+  std::vector<KeyLowerBound> bounds_;
+  // Children to seek right away during SeekWithDeferral(), by bound.
+  std::vector<size_t> candidates_;
+  // Postponed children (indexes into children_), smallest bound on top.
+  BinaryHeap<size_t, PostponedComparator> postponed_;
+  // In Next(), the user key returned last, while children are postponed.
+  std::string last_user_key_;
 
   // In forward direction, process a child that is not in the min heap.
   // If valid, add to the min heap. Otherwise, check status.
@@ -1448,6 +1536,125 @@ void MergingIterator::ClearHeaps(bool clear_active) {
   if (clear_active) {
     active_.clear();
   }
+  postponed_.clear();
+}
+
+void MergingIterator::SeekChild(HeapItem* child, const Slice& target) {
+  {
+    PERF_TIMER_GUARD(seek_child_seek_time);
+    child->iter.Seek(target);
+  }
+  PERF_COUNTER_ADD(seek_child_seek_count, 1);
+  // An asynchronous read was started: the second Seek() waits for it.
+  if (child->iter.status().IsTryAgain()) {
+    child->iter.Seek(target);
+    PERF_COUNTER_ADD(number_async_seek, 1);
+  }
+  PERF_TIMER_GUARD(seek_min_heap_time);
+  AddToMinHeapOrCheckStatus(child);
+}
+
+void MergingIterator::SeekWithDeferral(const Slice& target) {
+  assert(range_tombstone_iters_.empty());
+  ClearHeaps();
+  const Slice target_user_key = ExtractUserKey(target);
+  uint64_t num_bounds = 0;
+  uint64_t num_empty = 0;
+  uint64_t num_past_upper_bound = 0;
+  uint64_t num_postponed = 0;
+
+  // Children that cannot tell are sought first: their keys make the smallest
+  // key found so far smaller, so more of the others can be postponed.
+  candidates_.clear();
+  for (size_t level = 0; level < children_.size(); ++level) {
+    KeyLowerBound& bound = bounds_[level];
+    bound.empty = false;
+    bound.prefix.clear();
+    bound.known_bits = 0;
+    if (!children_[level].iter.GetApproximateLowerBound(target_user_key,
+                                                        &bound)) {
+      SeekChild(&children_[level], target);
+      continue;
+    }
+    ++num_bounds;
+    if (bound.empty) {
+      ++num_empty;
+      children_[level].iter.SetInvalid();
+      continue;
+    }
+    // Trimming keeps the bound valid and makes the order of postponed_
+    // agree with "after a key" (see PostponedComparator).
+    bound.known_bits =
+        KnownBitsWithoutTrailingZeros(bound.prefix, bound.known_bits);
+    bound.prefix = TruncateToKnownPrefixBits(bound.prefix, bound.known_bits);
+    if (iterate_upper_bound_ != nullptr &&
+        KnownPrefixPastUpperBound(bound.prefix, bound.known_bits,
+                                  *iterate_upper_bound_)) {
+      ++num_past_upper_bound;
+      children_[level].iter.SetInvalid();
+      continue;
+    }
+    candidates_.push_back(level);
+  }
+
+  // By increasing bound, so a child is sought only if no child with a
+  // smaller bound already found a key before it.
+  std::sort(candidates_.begin(), candidates_.end(), [this](size_t a, size_t b) {
+    return Slice(bounds_[a].prefix).compare(bounds_[b].prefix) < 0;
+  });
+  for (size_t level : candidates_) {
+    const KeyLowerBound& bound = bounds_[level];
+    if (!minHeap_.empty() &&
+        KnownPrefixAfterKey(bound.prefix, bound.known_bits,
+                            ExtractUserKey(minHeap_.top()->iter.key()))) {
+      // minHeap_ only gets smaller keys from here on, so the bound stays
+      // after the smallest key.
+      ++num_postponed;
+      children_[level].iter.SetInvalid();
+      postponed_.push(level);
+      continue;
+    }
+    SeekChild(&children_[level], target);
+  }
+
+  if (num_bounds > 0) {
+    RecordTick(statistics_, DEFERRED_SEEK_BOUNDS, num_bounds);
+    RecordTick(statistics_, DEFERRED_SEEK_EMPTY, num_empty);
+    RecordTick(statistics_, DEFERRED_SEEK_PAST_UPPER_BOUND,
+               num_past_upper_bound);
+    RecordTick(statistics_, DEFERRED_SEEK_POSTPONED, num_postponed);
+    RecordTick(statistics_, DEFERRED_SEEK_IMMEDIATE,
+               num_bounds - num_empty - num_past_upper_bound - num_postponed);
+  }
+}
+
+void MergingIterator::SeekPostponedChildren(const Slice& last_user_key) {
+  assert(direction_ == kForward);
+  // The first internal key after every version of last_user_key, built only
+  // when a child is sought.
+  std::string after;
+  while (!postponed_.empty()) {
+    const size_t level = postponed_.top();
+    if (minHeap_.empty()) {
+      // Nothing else is left: the child with the smallest bound is next.
+      RecordTick(statistics_, DEFERRED_SEEK_DRAINED);
+    } else {
+      const KeyLowerBound& bound = bounds_[level];
+      if (KnownPrefixAfterKey(bound.prefix, bound.known_bits,
+                              ExtractUserKey(minHeap_.top()->iter.key()))) {
+        // So are all other postponed children's bounds.
+        break;
+      }
+      RecordTick(statistics_, DEFERRED_SEEK_ACTIVATED);
+    }
+    postponed_.pop();
+    if (after.empty()) {
+      AppendInternalKey(
+          &after, ParsedInternalKey(last_user_key.ToString() + '\0',
+                                    kMaxSequenceNumber, kValueTypeForSeek));
+    }
+    SeekChild(&children_[level], after);
+  }
 }
 
 void MergingIterator::InitMaxHeap() {
@@ -1671,11 +1878,13 @@ InternalIterator* NewMergingIterator(const InternalKeyComparator* cmp,
 
 MergeIteratorBuilder::MergeIteratorBuilder(
     const InternalKeyComparator* comparator, Arena* a, bool prefix_seek_mode,
-    const Slice* iterate_upper_bound)
+    const Slice* iterate_upper_bound, bool deferred_seeks,
+    Statistics* statistics)
     : first_iter(nullptr), use_merging_iter(false), arena(a) {
   auto mem = arena->AllocateAligned(sizeof(MergingIterator));
-  merge_iter = new (mem) MergingIterator(comparator, nullptr, 0, true,
-                                         prefix_seek_mode, iterate_upper_bound);
+  merge_iter = new (mem)
+      MergingIterator(comparator, nullptr, 0, true, prefix_seek_mode,
+                      iterate_upper_bound, deferred_seeks, statistics);
 }
 
 MergeIteratorBuilder::~MergeIteratorBuilder() {

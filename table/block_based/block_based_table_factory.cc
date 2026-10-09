@@ -653,6 +653,18 @@ Status BlockBasedTableFactory::ValidateOptions(
       return Status::NotSupported(
           "Diva filter does not support partition_filters");
     }
+    // The parsed filter frees its block, leaving nothing to save to a
+    // secondary cache on eviction.
+    size_t secondary_cache_capacity = 0;
+    if (table_options_.block_cache != nullptr &&
+        table_options_.block_cache
+            ->GetSecondaryCacheCapacity(secondary_cache_capacity)
+            .ok() &&
+        secondary_cache_capacity > 0) {
+      return Status::NotSupported(
+          "Diva filter does not support a block cache with a secondary "
+          "cache");
+    }
   }
   if (table_options_.index_type == BlockBasedTableOptions::kHashSearch &&
       cf_opts.prefix_extractor == nullptr) {

@@ -2190,7 +2190,8 @@ bool BlockBasedTable::RangeMayMatch(const Slice& internal_key,
                                     BlockCacheLookupContext* lookup_context,
                                     bool* filter_checked) const {
   if (!rep_->range_filter ||
-      rep_->filter_type != Rep::FilterType::kFullFilter) {
+      rep_->filter_type != Rep::FilterType::kFullFilter ||
+      !read_options.lsm_range_filter) {
     return true;
   }
 
@@ -2223,6 +2224,23 @@ bool BlockBasedTable::RangeMayMatch(const Slice& internal_key,
   }
 
   return may_match;
+}
+
+bool BlockBasedTable::GetApproximateLowerBound(const ReadOptions& read_options,
+                                               const Slice& user_key,
+                                               KeyLowerBound* bound) const {
+  // The filter stores user keys without timestamps.
+  if (!HasRangeFilter() || !read_options.lsm_range_filter ||
+      rep_->internal_comparator.user_comparator()->timestamp_size() != 0) {
+    return false;
+  }
+  auto* const filter = static_cast<FullFilterBlockReader*>(rep_->filter.get());
+  if (filter == nullptr) {
+    return false;
+  }
+  BlockCacheLookupContext lookup_context{TableReaderCaller::kUserIterator};
+  return filter->GetApproximateLowerBound(user_key, bound, &lookup_context,
+                                          read_options);
 }
 
 // This will be broken if the user specifies an unusual implementation

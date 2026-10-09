@@ -222,6 +222,11 @@ class BlockBasedTableIterator : public InternalIteratorBase<Slice> {
     }
   }
 
+  bool GetApproximateLowerBound(const Slice& user_key,
+                                KeyLowerBound* bound) const override {
+    return table_->GetApproximateLowerBound(read_options_, user_key, bound);
+  }
+
   void SetReadaheadState(ReadaheadFileInfo* readahead_file_info) override {
     if (read_options_.adaptive_readahead) {
       block_prefetcher_.SetReadaheadState(

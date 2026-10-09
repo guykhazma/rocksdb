@@ -19,6 +19,7 @@
 #include "rocksdb/table_reader_caller.h"
 #include "table/get_context.h"
 #include "table/internal_iterator.h"
+#include "table/known_prefix_bits.h"
 #include "table/multiget_context.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -107,6 +108,15 @@ class TableReader {
   virtual Status ApproximateKeyAnchors(const ReadOptions& /*read_options*/,
                                        std::vector<Anchor>& /*anchors*/) {
     return Status::NotSupported("ApproximateKeyAnchors() not supported.");
+  }
+
+  // Bounds the user keys this table holds at or after `user_key`, from its
+  // range filter and without reading data blocks (see KeyLowerBound). False
+  // if the table cannot tell.
+  virtual bool GetApproximateLowerBound(const ReadOptions& /*read_options*/,
+                                        const Slice& /*user_key*/,
+                                        KeyLowerBound* /*bound*/) const {
+    return false;
   }
 
   // Set up the table for Compaction. Might change some parameters with

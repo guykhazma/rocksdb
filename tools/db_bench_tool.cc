@@ -74,6 +74,7 @@
 #include "rocksdb/utilities/transaction.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/write_batch.h"
+#include "table/block_based/filter_policy_internal.h"
 #include "test_util/testutil.h"
 #include "test_util/transaction_test_util.h"
 #include "tools/simulated_hybrid_file_system.h"
@@ -805,6 +806,13 @@ DEFINE_int32(bloom_bits, -1,
 
 DEFINE_bool(use_ribbon_filter, false, "Use Ribbon instead of Bloom filter");
 
+DEFINE_bool(
+    use_diva_filter, false,
+    "Use the Diva range filter instead of Bloom, with bloom_bits (10 if "
+    "negative) as its "
+    "infix bits per key. Bounded seeks (e.g. seekrandom with "
+    "max_scan_distance) then skip SST files the filter rules out.");
+
 DEFINE_double(memtable_bloom_size_ratio, 0,
               "Ratio of memtable size used for bloom filter. 0 means no bloom "
               "filter.");
@@ -1224,6 +1232,15 @@ DEFINE_bool(rate_limit_auto_wal_flush, false,
             "When true use Env::IO_USER priority level to charge internal rate "
             "limiter for automatic WAL flush (`Options::manual_wal_flush` == "
             "false) after the user write operation.");
+
+DEFINE_bool(
+    deferred_seeks, ROCKSDB_NAMESPACE::ReadOptions().deferred_seeks,
+    "ReadOptions::deferred_seeks: with a range filter, Seek() postpones "
+    "SST files that cannot hold the next key.");
+
+DEFINE_bool(lsm_range_filter, ROCKSDB_NAMESPACE::ReadOptions().lsm_range_filter,
+            "ReadOptions::lsm_range_filter: false makes reads ignore the range "
+            "filter except for point lookups.");
 
 DEFINE_bool(async_io, false,
             "When set true, RocksDB does asynchronous reads for internal auto "
@@ -3625,6 +3642,8 @@ class Benchmark {
       read_options_.async_io = FLAGS_async_io;
       read_options_.optimize_multiget_for_io = FLAGS_optimize_multiget_for_io;
       read_options_.auto_readahead_size = FLAGS_auto_readahead_size;
+      read_options_.deferred_seeks = FLAGS_deferred_seeks;
+      read_options_.lsm_range_filter = FLAGS_lsm_range_filter;
       read_options_.auto_refresh_iterator_with_snapshot =
           FLAGS_auto_refresh_iterator_with_snapshot;
       if (FLAGS_use_trie_index && udi_factory_) {
@@ -5046,7 +5065,11 @@ class Benchmark {
         table_options->block_cache = cache_;
       }
       if (table_options->filter_policy == nullptr) {
-        if (FLAGS_bloom_bits < 0) {
+        if (FLAGS_use_diva_filter && FLAGS_bloom_bits != 0) {
+          table_options->filter_policy.reset(NewDivaFilterPolicy(
+              DivaFilterPolicy::kDefaultRngSeed,
+              FLAGS_bloom_bits < 0 ? 10 : FLAGS_bloom_bits));
+        } else if (FLAGS_bloom_bits < 0) {
           table_options->filter_policy = BlockBasedTableOptions().filter_policy;
         } else if (FLAGS_bloom_bits == 0) {
           table_options->filter_policy.reset();

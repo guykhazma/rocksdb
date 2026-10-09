@@ -16,6 +16,7 @@
 #include "rocksdb/io_status.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice_transform.h"
+#include "table/block_based/filter_policy_internal.h"
 #include "util/compression.h"
 #ifdef GFLAGS
 #include "db_stress_tool/db_stress_common.h"
@@ -49,6 +50,14 @@ namespace ROCKSDB_NAMESPACE {
 namespace {
 
 std::shared_ptr<const FilterPolicy> CreateFilterPolicy() {
+  if (FLAGS_use_diva_filter) {
+    const uint32_t infix_bits_per_key =
+        FLAGS_bloom_bits < 0
+            ? 10
+            : static_cast<uint32_t>(std::lround(FLAGS_bloom_bits));
+    return std::shared_ptr<const FilterPolicy>(NewDivaFilterPolicy(
+        DivaFilterPolicy::kDefaultRngSeed, infix_bits_per_key));
+  }
   if (FLAGS_bloom_bits < 0) {
     return BlockBasedTableOptions().filter_policy;
   }
@@ -1001,6 +1010,8 @@ void StressTest::OperateDb(ThreadState* thread) {
   read_opts.fill_cache = FLAGS_fill_cache;
   read_opts.optimize_multiget_for_io = FLAGS_optimize_multiget_for_io;
   read_opts.allow_unprepared_value = FLAGS_allow_unprepared_value;
+  read_opts.deferred_seeks = FLAGS_deferred_seeks;
+  read_opts.lsm_range_filter = FLAGS_lsm_range_filter;
   read_opts.auto_refresh_iterator_with_snapshot =
       FLAGS_auto_refresh_iterator_with_snapshot;
   if (FLAGS_use_trie_index && udi_factory_) {

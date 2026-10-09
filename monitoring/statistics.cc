@@ -300,6 +300,14 @@ const std::vector<std::pair<Tickers, std::string>> TickersNameMap = {
     {PREFETCH_MEMORY_BYTES_RELEASED, "rocksdb.prefetch.memory.bytes.released"},
     {PREFETCH_MEMORY_REQUESTS_BLOCKED,
      "rocksdb.prefetch.memory.requests.blocked"},
+    {DEFERRED_SEEK_BOUNDS, "rocksdb.deferred.seek.bounds"},
+    {DEFERRED_SEEK_EMPTY, "rocksdb.deferred.seek.empty"},
+    {DEFERRED_SEEK_PAST_UPPER_BOUND, "rocksdb.deferred.seek.past.upper.bound"},
+    {DEFERRED_SEEK_POSTPONED, "rocksdb.deferred.seek.postponed"},
+    {DEFERRED_SEEK_IMMEDIATE, "rocksdb.deferred.seek.immediate"},
+    {DEFERRED_SEEK_ACTIVATED, "rocksdb.deferred.seek.activated"},
+    {DEFERRED_SEEK_DRAINED, "rocksdb.deferred.seek.drained"},
+    {DEFERRED_SEEK_FALLBACK, "rocksdb.deferred.seek.fallback"},
 };
 
 const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {

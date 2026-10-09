@@ -26,6 +26,7 @@
 #include "db_stress_tool/db_stress_shared_state.h"
 #include "port/stack_trace.h"
 #include "rocksdb/convenience.h"
+#include "table/block_based/filter_policy_internal.h"
 #include "utilities/fault_injection_fs.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -145,6 +146,28 @@ int db_stress_tool(int argc, char** argv) {
                                       ROCKSDB_NAMESPACE::Env::Priority::LOW);
   db_stress_env->SetBackgroundThreads(FLAGS_num_bottom_pri_threads,
                                       ROCKSDB_NAMESPACE::Env::Priority::BOTTOM);
+  if (FLAGS_use_diva_filter &&
+      !ROCKSDB_NAMESPACE::DivaFilterPolicy::IsSupported()) {
+    fprintf(stderr,
+            "WARNING: this build has no Diva filter; using the Bloom filter "
+            "instead of use_diva_filter\n");
+    FLAGS_use_diva_filter = false;
+  }
+  if (FLAGS_use_diva_filter &&
+      (FLAGS_prefix_size >= 0 || FLAGS_delrangepercent > 0 ||
+       FLAGS_test_ingest_standalone_range_deletion_one_in > 0 ||
+       FLAGS_user_timestamp_size > 0 || FLAGS_partition_filters ||
+       !FLAGS_secondary_cache_uri.empty() ||
+       FLAGS_compressed_secondary_cache_size > 0 ||
+       FLAGS_compressed_secondary_cache_ratio > 0.0 ||
+       FLAGS_cache_type.rfind("tiered_", 0) == 0)) {
+    fprintf(stderr,
+            "Error: use_diva_filter needs prefix_size < 0, delrangepercent and "
+            "test_ingest_standalone_range_deletion_one_in of 0, no "
+            "user_timestamp_size, no partition_filters and no secondary "
+            "cache\n");
+    exit(1);
+  }
   if (FLAGS_prefixpercent > 0 && FLAGS_prefix_size < 0) {
     fprintf(stderr,
             "Error: prefixpercent is non-zero while prefix_size is "

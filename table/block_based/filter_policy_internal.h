@@ -15,6 +15,7 @@
 
 #include "rocksdb/filter_policy.h"
 #include "rocksdb/table.h"
+#include "table/known_prefix_bits.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -125,6 +126,13 @@ class FilterBitsReader {
 
   virtual bool RangeMayMatch(const Slice& /*start*/, const Slice& /*end*/) {
     return true;
+  }
+
+  // Bounds the keys this filter holds at or after `target` (see
+  // KeyLowerBound). False if the filter cannot tell.
+  virtual bool GetApproximateLowerBound(const Slice& /*target*/,
+                                        KeyLowerBound* /*bound*/) {
+    return false;
   }
 
   // Memory the reader holds besides the filter block it was built from. When

@@ -15,6 +15,7 @@
 
 #include "cache/cache_reservation_manager.h"
 #include "port/port.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/flush_block_policy.h"
 #include "rocksdb/table.h"
 
@@ -77,7 +78,13 @@ class BlockBasedTableFactory : public TableFactory {
 
   std::string GetPrintableOptions() const override;
 
-  bool IsDeleteRangeSupported() const override { return true; }
+  // Not with a range filter: reads there skip range tombstones (so that a
+  // merge can postpone seeking SST files, see ReadOptions::deferred_seeks),
+  // and DeleteRange() is rejected.
+  bool IsDeleteRangeSupported() const override {
+    return table_options_.filter_policy == nullptr ||
+           !table_options_.filter_policy->SupportsRange();
+  }
 
   std::unique_ptr<TableFactory> Clone() const override {
     return std::make_unique<BlockBasedTableFactory>(*this);

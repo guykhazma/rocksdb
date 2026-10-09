@@ -9,6 +9,7 @@
 
 #include "rocksdb/filter_policy.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <climits>
@@ -2017,6 +2018,38 @@ class DivaFilterBitsReader : public FilterBitsReader {
       return false;
     }
     return filter_.RangeQuery(ToStringView(start), ToStringView(end));
+  }
+
+  // The first entry of an open-ended iterator from `target` is the first key
+  // >= target the filter holds, to the bits it stores; later keys are larger.
+  bool GetApproximateLowerBound(const Slice& target,
+                                KeyLowerBound* bound) override {
+    // The iterator copies keys into fixed buffers of this size.
+    constexpr size_t kMaxKeyBytes = 1023;
+    if (target.size() > kMaxKeyBytes) {
+      return false;
+    }
+    // Diva compares keys padded with zero bytes, so a key of only zero bytes
+    // is the same point as an all-zero start, and the iterator starts past
+    // it. Such a key can only be >= a target of only zero bytes (including
+    // the empty target), so those targets get no bound.
+    if (std::all_of(target.data(), target.data() + target.size(),
+                    [](char c) { return c == '\0'; })) {
+      return false;
+    }
+    auto iter = filter_.GetIterator(ToStringView(target), std::string_view());
+    if (!iter.IsValid()) {
+      bound->empty = true;
+      bound->prefix.clear();
+      bound->known_bits = 0;
+      return true;
+    }
+    const auto entry = *iter;  // (key bytes, number of bits stored)
+    bound->empty = false;
+    bound->known_bits =
+        KnownBitsWithoutTrailingZeros(entry.first, entry.second);
+    bound->prefix = TruncateToKnownPrefixBits(entry.first, bound->known_bits);
+    return true;
   }
 
  private:

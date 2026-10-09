@@ -15,6 +15,7 @@
 #include "rocksdb/iterator.h"
 #include "rocksdb/status.h"
 #include "table/format.h"
+#include "table/known_prefix_bits.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -201,6 +202,15 @@ class InternalIteratorBase : public Cleanable {
   virtual bool IsDeleteRangeSentinelKey() const { return false; }
 
   virtual void Prepare(const MultiScanArgs* /*scan_opts*/) {}
+
+  // Bounds the keys this iterator could return after Seek() to a key with
+  // user key `user_key`, without moving it or reading data blocks (see
+  // KeyLowerBound). False if the iterator cannot tell. A merging iterator uses
+  // this to postpone seeking children that cannot supply the next key.
+  virtual bool GetApproximateLowerBound(const Slice& /*user_key*/,
+                                        KeyLowerBound* /*bound*/) const {
+    return false;
+  }
 
  protected:
   void SeekForPrevImpl(const Slice& target, const CompareInterface* cmp) {

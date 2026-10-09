@@ -203,6 +203,22 @@ class IteratorWrapperBase {
     }
   }
 
+  bool GetApproximateLowerBound(const Slice& user_key,
+                                KeyLowerBound* bound) const {
+    return iter_ != nullptr && iter_->GetApproximateLowerBound(user_key, bound);
+  }
+
+  // Marks the child invalid without seeking it: a merging iterator does this
+  // for a child it has proven empty or has postponed seeking. The underlying
+  // iterator keeps its previous position until it is sought again.
+  void SetInvalid() {
+    valid_ = false;
+#ifdef ROCKSDB_ASSERT_STATUS_CHECKED
+    // Not invalid because of an error, so there is no status to check.
+    status_checked_after_invalid_ = true;
+#endif
+  }
+
  private:
   void Update() {
     valid_ = iter_->Valid();

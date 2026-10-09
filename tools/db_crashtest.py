@@ -439,6 +439,11 @@ default_params = {
     "memtable_veirfy_per_key_checksum_on_seek": lambda: random.choice([0] * 7 + [1]),
     "memtable_batch_lookup_optimization": lambda: random.randint(0, 1),
     "allow_unprepared_value": lambda: random.choice([0, 1]),
+    # Fixed across runs: reads with a range filter ignore range tombstones,
+    # so a DB must not switch to it after DeleteRange.
+    "use_diva_filter": random.choice([0] * 4 + [1]),
+    "deferred_seeks": lambda: random.choice([0, 1]),
+    "lsm_range_filter": lambda: random.choice([0, 1]),
     # TODO(hx235): enable `track_and_verify_wals` after stabalizing the stress test
     "track_and_verify_wals": lambda: random.choice([0]),
     "remote_compaction_worker_threads": lambda: random.choice([0, 8]),
@@ -1013,6 +1018,27 @@ def finalize_and_sanitize(src_params):
         or dest_params.get("test_secondary") == 1
     ):
         dest_params["sst_file_manager_bytes_per_truncate"] = 0
+    if dest_params.get("use_diva_filter") == 1:
+        if (
+            dest_params.get("user_timestamp_size", 0) > 0
+            or dest_params.get("test_batches_snapshots") == 1
+        ):
+            dest_params["use_diva_filter"] = 0
+        else:
+            # Diva needs whole keys and no range tombstones.
+            dest_params["prefix_size"] = -1
+            dest_params["delpercent"] += dest_params["delrangepercent"]
+            dest_params["delrangepercent"] = 0
+            dest_params["test_ingest_standalone_range_deletion_one_in"] = 0
+            dest_params["partition_filters"] = 0
+            # Nor a secondary cache.
+            dest_params["secondary_cache_uri"] = ""
+            dest_params["secondary_cache_fault_one_in"] = 0
+            dest_params["compressed_secondary_cache_size"] = 0
+            dest_params["compressed_secondary_cache_ratio"] = 0.0
+            dest_params["cache_type"] = dest_params["cache_type"].replace(
+                "tiered_", ""
+            )
     if dest_params.get("prefix_size") == -1:
         dest_params["readpercent"] += dest_params.get("prefixpercent", 20)
         dest_params["prefixpercent"] = 0

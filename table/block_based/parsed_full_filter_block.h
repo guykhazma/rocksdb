@@ -36,7 +36,8 @@ class ParsedFullFilterBlock {
   }
 
   // For TypedCacheInterface. A released block has no contents to save, so a
-  // filter whose reader releases it cannot go to a secondary cache.
+  // filter whose reader releases it cannot go to a secondary cache (a block
+  // cache with one is rejected with such a filter policy).
   const Slice& ContentSlice() const {
     assert(!block_released_);
     return block_contents_.data;

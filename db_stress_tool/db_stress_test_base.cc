@@ -56,7 +56,8 @@ std::shared_ptr<const FilterPolicy> CreateFilterPolicy() {
             ? 10
             : static_cast<uint32_t>(std::lround(FLAGS_bloom_bits));
     return std::shared_ptr<const FilterPolicy>(NewDivaFilterPolicy(
-        DivaFilterPolicy::kDefaultRngSeed, infix_bits_per_key));
+        DivaFilterPolicy::kDefaultRngSeed, infix_bits_per_key,
+        /*load_factor=*/.95, FLAGS_diva_plus_plus));
   }
   if (FLAGS_bloom_bits < 0) {
     return BlockBasedTableOptions().filter_policy;

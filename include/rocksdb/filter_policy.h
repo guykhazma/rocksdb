@@ -221,12 +221,18 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
 // - infix_bits_per_key: the memory budget for the infix part (0 disables the
 //   filter).
 // - load_factor: the load factor for the infix store of Diva.
+// - diva_plus_plus: build Diva++, which stores the
+//   keys whose infixes collide in a small trie, for fewer false positives on
+//   keys that share long prefixes, at some extra space and build time; false
+//   builds Diva's Standard mode. Readers decode filters of either mode, so
+//   the setting can change on an existing DB.
 // As a configuration string (in an OPTIONS file, or CreateFromString), the
 // policy is either
-//   divafilter:<infix_bits_per_key>:<load_factor>:<rng_seed>
-// which is the form an OPTIONS file records, or the short
+//   divafilter:<infix_bits_per_key>:<load_factor>:<rng_seed>[:divaplusplus]
+// which is the form an OPTIONS file records (Standard mode without the
+// suffix), or the short
 //   divafilter:<infix_bits_per_key>
-// which defaults the other two.
+// which defaults the rest, Diva++ included.
 // Opening a DB with this policy fails with NotSupported unless:
 // - the build includes Diva (x86-64 with SSE4.2, POPCNT, BMI, BMI2 and LZCNT
 //   enabled at compile time; see DivaFilterPolicy::IsSupported());
@@ -235,6 +241,7 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
 // - partition_filters is off.
 FilterPolicy* NewDivaFilterPolicy(uint32_t rng_seed,
                                   uint32_t infix_bits_per_key,
-                                  double load_factor = .95);
+                                  double load_factor = .95,
+                                  bool diva_plus_plus = true);
 
 }  // namespace ROCKSDB_NAMESPACE

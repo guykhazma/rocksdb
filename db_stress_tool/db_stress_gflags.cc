@@ -579,6 +579,10 @@ DEFINE_bool(use_diva_filter, false,
             "Bloom filter where "
             "the build has no Diva.");
 
+DEFINE_bool(diva_plus_plus, true,
+            "With use_diva_filter, build Diva++; "
+            "false builds Diva's Standard mode.");
+
 DEFINE_int32(
     bloom_before_level, 999,
     "Use Bloom filter on levels below specified and Ribbon beginning on level "

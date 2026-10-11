@@ -806,12 +806,15 @@ DEFINE_int32(bloom_bits, -1,
 
 DEFINE_bool(use_ribbon_filter, false, "Use Ribbon instead of Bloom filter");
 
-DEFINE_bool(
-    use_diva_filter, false,
-    "Use the Diva range filter instead of Bloom, with bloom_bits (10 if "
-    "negative) as its "
-    "infix bits per key. Bounded seeks (e.g. seekrandom with "
-    "max_scan_distance) then skip SST files the filter rules out.");
+DEFINE_bool(use_diva_filter, false,
+            "Use the Diva range filter instead of Bloom, with bloom_bits (10 "
+            "if negative) as its infix bits per key. Bounded seeks (e.g. "
+            "seekrandom with max_scan_distance) then skip SST files the "
+            "filter rules out.");
+
+DEFINE_bool(diva_plus_plus, true,
+            "With use_diva_filter, build Diva++ (Diva's BinaryTrie mode); "
+            "false builds Diva's Standard mode.");
 
 DEFINE_double(memtable_bloom_size_ratio, 0,
               "Ratio of memtable size used for bloom filter. 0 means no bloom "
@@ -5066,9 +5069,10 @@ class Benchmark {
       }
       if (table_options->filter_policy == nullptr) {
         if (FLAGS_use_diva_filter && FLAGS_bloom_bits != 0) {
-          table_options->filter_policy.reset(NewDivaFilterPolicy(
-              DivaFilterPolicy::kDefaultRngSeed,
-              FLAGS_bloom_bits < 0 ? 10 : FLAGS_bloom_bits));
+          table_options->filter_policy.reset(
+              NewDivaFilterPolicy(DivaFilterPolicy::kDefaultRngSeed,
+                                  FLAGS_bloom_bits < 0 ? 10 : FLAGS_bloom_bits,
+                                  /*load_factor=*/.95, FLAGS_diva_plus_plus));
         } else if (FLAGS_bloom_bits < 0) {
           table_options->filter_policy = BlockBasedTableOptions().filter_policy;
         } else if (FLAGS_bloom_bits == 0) {

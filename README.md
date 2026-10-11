@@ -2,11 +2,16 @@
 
 This branch is RocksDB v11.1.2 plus an experimental filter policy backed by
 [Diva](https://github.com/n3slami/Diva), a range filter, included as the
-`third-party/Diva` git submodule and used in its default (`Standard`) mode.
-It adds the following:
+`third-party/Diva` git submodule. It adds the following:
 
 1. **Diva as the SST filter.** `NewDivaFilterPolicy()` replaces a Bloom or
    Ribbon filter: point lookups (`Get`, `MultiGet`) use it the same way.
+   It builds Diva++ by default (the paper's name for Diva's `BinaryTrie`
+   mode): keys whose infixes collide are kept in a small trie, for fewer
+   false positives on keys with long shared prefixes, at some extra space and
+   build time. `diva_plus_plus = false` selects Diva's `Standard` mode
+   instead. Readers decode filters of either mode, so a DB can switch
+   between them.
 2. **Range filtering for bounded seeks.** When an iterator has
    `ReadOptions::iterate_upper_bound` set, each SST file's table iterator
    first asks its Diva filter, on a forward `Seek(target)`, whether any key
@@ -39,6 +44,8 @@ make -j static_lib          # or CMake
 BlockBasedTableOptions table_options;
 table_options.filter_policy.reset(NewDivaFilterPolicy(
     /*rng_seed=*/1, /*infix_bits_per_key=*/10));
+// Or Diva's Standard mode:
+//   NewDivaFilterPolicy(1, 10, /*load_factor=*/.95, /*diva_plus_plus=*/false)
 options.table_factory.reset(NewBlockBasedTableFactory(table_options));
 
 // Bounded scan: SST files with no key in [user2000, user3000) are skipped.
@@ -113,9 +120,9 @@ reads skip range tombstones.
 Tests: `make db_diva_filter_test && ./db_diva_filter_test`.
 
 Tools: `db_bench --use_diva_filter --bloom_bits=<infix bits per key>`, with
-`--deferred_seeks` and `--lsm_range_filter`; bounded scans come from
-`seekrandom --max_scan_distance=<n>`. `db_stress` takes the same three
-flags, and `tools/db_crashtest.py` turns them on at random.
+`--diva_plus_plus`, `--deferred_seeks` and `--lsm_range_filter`; bounded
+scans come from `seekrandom --max_scan_distance=<n>`. `db_stress` takes the
+same flags, and `tools/db_crashtest.py` sets them at random.
 ---
 
 ## RocksDB: A Persistent Key-Value Store for Flash and RAM Storage

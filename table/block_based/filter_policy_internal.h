@@ -331,7 +331,7 @@ class RibbonFilterPolicy : public BloomLikeFilterPolicy {
 class DivaFilterPolicy : public FilterPolicy {
  public:
   DivaFilterPolicy(uint32_t rng_seed, uint32_t infix_bits_per_key,
-                   double load_factor);
+                   double load_factor, bool diva_plus_plus);
 
   FilterBitsBuilder* GetBuilderWithContext(
       const FilterBuildingContext&) const override;
@@ -357,11 +357,15 @@ class DivaFilterPolicy : public FilterPolicy {
   // factor it leaves out takes the default of NewDivaFilterPolicy().
   static constexpr uint32_t kDefaultRngSeed = 0;
 
+  // Ends the id of a policy that builds Diva++ filters.
+  static constexpr const char* kDivaPlusPlusSuffix = ":divaplusplus";
+
  private:
   const uint32_t rng_seed_;
   // 0 means no filter is built.
   const uint32_t infix_bits_per_key_;
   const double load_factor_;
+  const bool diva_plus_plus_;
 };
 
 // For testing only, but always constructable with internal names

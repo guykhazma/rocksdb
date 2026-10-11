@@ -1903,18 +1903,22 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
 namespace {
 
 #if ROCKSDB_DIVA_SUPPORTED
-// Diva filter block: fixed64 magic followed by Diva::Serialize() output.
+// Diva filter block: fixed64 magic, which also tells the Diva type, followed
+// by Diva::Serialize() output.
 constexpr uint64_t kDivaFilterMagic = 0x44495641524e4731ULL;
+constexpr uint64_t kDivaPlusPlusFilterMagic = 0x44495641524e4732ULL;
 
 std::string_view ToStringView(const Slice& s) {
   return std::string_view(s.data(), s.size());
 }
 
+template <typename TFilter>
 class DivaFilterBitsBuilder : public FilterBitsBuilder {
  public:
-  DivaFilterBitsBuilder(uint32_t rng_seed, uint32_t infix_bits_per_key,
-                        double load_factor)
-      : rng_seed_(rng_seed),
+  DivaFilterBitsBuilder(uint64_t magic, uint32_t rng_seed,
+                        uint32_t infix_bits_per_key, double load_factor)
+      : magic_(magic),
+        rng_seed_(rng_seed),
         infix_bits_per_key_(infix_bits_per_key),
         load_factor_(load_factor),
         bits_per_key_(DivaFilterPolicy::EstimateBitsPerKey(infix_bits_per_key,
@@ -1950,7 +1954,7 @@ class DivaFilterBitsBuilder : public FilterBitsBuilder {
     filter_->BulkLoadStreamingFinish();
     const size_t size = sizeof(uint64_t) + filter_->Size();
     std::unique_ptr<char[]> data(new char[size]);
-    EncodeFixed64(data.get(), kDivaFilterMagic);
+    EncodeFixed64(data.get(), magic_);
     filter_->Serialize(data.get() + sizeof(uint64_t));
     const Slice result(data.get(), size);
     buf->reset(data.release());
@@ -1973,21 +1977,23 @@ class DivaFilterBitsBuilder : public FilterBitsBuilder {
 
  private:
   void Reset() {
-    filter_ = std::make_unique<DivaRangeFilter>(
-        infix_bits_per_key_, rng_seed_, static_cast<float>(load_factor_));
+    filter_ = std::make_unique<TFilter>(infix_bits_per_key_, rng_seed_,
+                                        static_cast<float>(load_factor_));
     last_key_.clear();
     num_added_ = 0;
   }
 
+  const uint64_t magic_;
   const uint32_t rng_seed_;
   const uint32_t infix_bits_per_key_;
   const double load_factor_;
   const double bits_per_key_;
-  std::unique_ptr<DivaRangeFilter> filter_;
+  std::unique_ptr<TFilter> filter_;
   std::string last_key_;
   size_t num_added_ = 0;
 };
 
+template <typename TFilter>
 class DivaFilterBitsReader : public FilterBitsReader {
  public:
   explicit DivaFilterBitsReader(const Slice& contents)
@@ -2053,7 +2059,7 @@ class DivaFilterBitsReader : public FilterBitsReader {
   }
 
  private:
-  DivaRangeFilter filter_;
+  TFilter filter_;
   const size_t memory_bytes_;
 };
 #endif  // ROCKSDB_DIVA_SUPPORTED
@@ -2062,10 +2068,11 @@ class DivaFilterBitsReader : public FilterBitsReader {
 
 DivaFilterPolicy::DivaFilterPolicy(uint32_t rng_seed,
                                    uint32_t infix_bits_per_key,
-                                   double load_factor)
+                                   double load_factor, bool diva_plus_plus)
     : rng_seed_(rng_seed),
       infix_bits_per_key_(std::min(infix_bits_per_key, uint32_t{32})),
-      load_factor_(load_factor > 0 && load_factor <= 1 ? load_factor : 0.95) {}
+      load_factor_(load_factor > 0 && load_factor <= 1 ? load_factor : 0.95),
+      diva_plus_plus_(diva_plus_plus) {}
 
 double DivaFilterPolicy::EstimateBitsPerKey(uint32_t infix_bits_per_key,
                                             double load_factor) {
@@ -2088,7 +2095,8 @@ const char* DivaFilterPolicy::kNickName() { return "rocksdb.DivaFilter"; }
 // an equivalent policy. See RegisterBuiltinFilterPolicies().
 std::string DivaFilterPolicy::GetId() const {
   return std::string(kClassName()) + ":" + std::to_string(infix_bits_per_key_) +
-         ":" + std::to_string(load_factor_) + ":" + std::to_string(rng_seed_);
+         ":" + std::to_string(load_factor_) + ":" + std::to_string(rng_seed_) +
+         (diva_plus_plus_ ? kDivaPlusPlusSuffix : "");
 }
 
 bool DivaFilterPolicy::IsSupported() { return ROCKSDB_DIVA_SUPPORTED; }
@@ -2097,8 +2105,13 @@ FilterBitsBuilder* DivaFilterPolicy::GetBuilderWithContext(
     const FilterBuildingContext& /*context*/) const {
 #if ROCKSDB_DIVA_SUPPORTED
   if (infix_bits_per_key_ != 0) {
-    return new DivaFilterBitsBuilder(rng_seed_, infix_bits_per_key_,
-                                     load_factor_);
+    if (diva_plus_plus_) {
+      return new DivaFilterBitsBuilder<DivaPlusPlus>(
+          kDivaPlusPlusFilterMagic, rng_seed_, infix_bits_per_key_,
+          load_factor_);
+    }
+    return new DivaFilterBitsBuilder<DivaRangeFilter>(
+        kDivaFilterMagic, rng_seed_, infix_bits_per_key_, load_factor_);
   }
 #endif  // ROCKSDB_DIVA_SUPPORTED
   return nullptr;
@@ -2107,9 +2120,15 @@ FilterBitsBuilder* DivaFilterPolicy::GetBuilderWithContext(
 FilterBitsReader* DivaFilterPolicy::GetFilterBitsReader(
     const Slice& contents) const {
 #if ROCKSDB_DIVA_SUPPORTED
-  if (contents.size() > sizeof(uint64_t) &&
-      DecodeFixed64(contents.data()) == kDivaFilterMagic) {
-    return new DivaFilterBitsReader(contents);
+  // Either type, whatever this policy builds.
+  if (contents.size() > sizeof(uint64_t)) {
+    const uint64_t magic = DecodeFixed64(contents.data());
+    if (magic == kDivaFilterMagic) {
+      return new DivaFilterBitsReader<DivaRangeFilter>(contents);
+    }
+    if (magic == kDivaPlusPlusFilterMagic) {
+      return new DivaFilterBitsReader<DivaPlusPlus>(contents);
+    }
   }
 #else
   (void)contents;
@@ -2119,8 +2138,9 @@ FilterBitsReader* DivaFilterPolicy::GetFilterBitsReader(
 
 FilterPolicy* NewDivaFilterPolicy(uint32_t rng_seed,
                                   uint32_t infix_bits_per_key,
-                                  double load_factor) {
-  return new DivaFilterPolicy(rng_seed, infix_bits_per_key, load_factor);
+                                  double load_factor, bool diva_plus_plus) {
+  return new DivaFilterPolicy(rng_seed, infix_bits_per_key, load_factor,
+                              diva_plus_plus);
 }
 
 FilterBuildingContext::FilterBuildingContext(
@@ -2242,21 +2262,28 @@ static int RegisterBuiltinFilterPolicies(ObjectLibrary& library,
   // which requires its whole remainder to be one number. Registered even
   // where Diva is unavailable, so an OPTIONS file still loads; opening the
   // DB is what reports that.
-  library.AddFactory<const FilterPolicy>(
-      ObjectLibrary::PatternEntry(DivaFilterPolicy::kClassName(), false)
-          .AnotherName(DivaFilterPolicy::kNickName())
-          .AddNumber(":", true)   // infix_bits_per_key
-          .AddNumber(":", false)  // load_factor
-          .AddNumber(":", true),  // rng_seed
-      [](const std::string& uri, std::unique_ptr<const FilterPolicy>* guard,
-         std::string* /* errmsg */) {
-        const std::vector<std::string> vals = StringSplit(uri, ':');
-        guard->reset(NewDivaFilterPolicy(
-            static_cast<uint32_t>(ParseInt(vals[3])) /* rng_seed */,
-            static_cast<uint32_t>(ParseInt(vals[1])) /* infix_bits_per_key */,
-            ParseDouble(vals[2]) /* load_factor */));
-        return guard->get();
-      });
+  for (const bool diva_plus_plus : {false, true}) {
+    ObjectLibrary::PatternEntry entry =
+        ObjectLibrary::PatternEntry(DivaFilterPolicy::kClassName(), false)
+            .AnotherName(DivaFilterPolicy::kNickName())
+            .AddNumber(":", true)   // infix_bits_per_key
+            .AddNumber(":", false)  // load_factor
+            .AddNumber(":", true);  // rng_seed
+    if (diva_plus_plus) {
+      entry.AddSuffix(DivaFilterPolicy::kDivaPlusPlusSuffix);
+    }
+    library.AddFactory<const FilterPolicy>(
+        entry, [diva_plus_plus](const std::string& uri,
+                                std::unique_ptr<const FilterPolicy>* guard,
+                                std::string* /* errmsg */) {
+          const std::vector<std::string> vals = StringSplit(uri, ':');
+          guard->reset(NewDivaFilterPolicy(
+              static_cast<uint32_t>(ParseInt(vals[3])) /* rng_seed */,
+              static_cast<uint32_t>(ParseInt(vals[1])) /* infix_bits_per_key */,
+              ParseDouble(vals[2]) /* load_factor */, diva_plus_plus));
+          return guard->get();
+        });
+  }
   library.AddFactory<const FilterPolicy>(
       FilterPatternEntryWithBits(test::LegacyBloomFilterPolicy::kClassName()),
       [](const std::string& uri, std::unique_ptr<const FilterPolicy>* guard,

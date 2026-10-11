@@ -171,6 +171,7 @@ DECLARE_bool(enable_write_thread_adaptive_yield);
 DECLARE_int32(reopen);
 DECLARE_double(bloom_bits);
 DECLARE_bool(use_diva_filter);
+DECLARE_bool(diva_plus_plus);
 DECLARE_int32(bloom_before_level);
 DECLARE_bool(partition_filters);
 DECLARE_bool(optimize_filters_for_memory);

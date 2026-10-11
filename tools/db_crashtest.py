@@ -442,6 +442,8 @@ default_params = {
     # Fixed across runs: reads with a range filter ignore range tombstones,
     # so a DB must not switch to it after DeleteRange.
     "use_diva_filter": random.choice([0] * 4 + [1]),
+    # Either mode reads the other's filters, so this may change across runs.
+    "diva_plus_plus": lambda: random.choice([0, 1]),
     "deferred_seeks": lambda: random.choice([0, 1]),
     "lsm_range_filter": lambda: random.choice([0, 1]),
     # TODO(hx235): enable `track_and_verify_wals` after stabalizing the stress test

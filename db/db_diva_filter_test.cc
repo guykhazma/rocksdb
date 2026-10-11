@@ -37,9 +37,15 @@ namespace {
 constexpr uint32_t kSeed = 7;
 constexpr uint32_t kInfixBitsPerKey = 10;
 
-std::shared_ptr<const FilterPolicy> NewDiva(uint32_t infix_bits_per_key) {
-  return std::shared_ptr<const FilterPolicy>(
-      NewDivaFilterPolicy(kSeed, infix_bits_per_key));
+std::shared_ptr<const FilterPolicy> NewDiva(uint32_t infix_bits_per_key,
+                                            bool diva_plus_plus) {
+  return std::shared_ptr<const FilterPolicy>(NewDivaFilterPolicy(
+      kSeed, infix_bits_per_key, /*load_factor=*/.95, diva_plus_plus));
+}
+
+// Names the Diva mode a parameterized test runs with.
+std::string DivaModeName(const testing::TestParamInfo<bool>& info) {
+  return info.param ? "DivaPlusPlus" : "Standard";
 }
 
 // Distinct keys of 1 to 20 random bytes, sorted. Bytes 0x00 and 0xff are
@@ -173,12 +179,18 @@ TEST(KnownPrefixBitsTest, TrimmedBoundOrderAgreesWithAfterKey) {
   }
 }
 
-class DivaFilterPolicyTest : public testing::Test {
+// Runs in both Diva modes: the parameter is NewDivaFilterPolicy()'s
+// diva_plus_plus.
+class DivaFilterPolicyTest : public testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
     if (!DivaFilterPolicy::IsSupported()) {
       ROCKSDB_GTEST_SKIP("Diva filter is not available in this build");
     }
+  }
+
+  std::shared_ptr<const FilterPolicy> Diva(uint32_t infix_bits_per_key) {
+    return NewDiva(infix_bits_per_key, GetParam());
   }
 
   // Builds a filter from `keys` (sorted) and returns its reader.
@@ -200,11 +212,11 @@ class DivaFilterPolicyTest : public testing::Test {
   Slice filter_;
 };
 
-// The bound Funkey's Diva filter returns is sound for every target, and
+// The bound the Diva filter returns is sound for every target, and
 // "empty" whenever no key is >= target (above the largest key).
-TEST_F(DivaFilterPolicyTest, ApproximateLowerBound) {
+TEST_P(DivaFilterPolicyTest, ApproximateLowerBound) {
   Random rnd(301);
-  const auto policy = NewDiva(kInfixBitsPerKey);
+  const auto policy = Diva(kInfixBitsPerKey);
   for (int round = 0; round < 4; ++round) {
     const std::vector<std::string> keys = RandomKeys(&rnd, 3000);
     auto reader = Build(*policy, keys);
@@ -223,8 +235,8 @@ TEST_F(DivaFilterPolicyTest, ApproximateLowerBound) {
 }
 
 // Filters that cannot bound keys say so.
-TEST_F(DivaFilterPolicyTest, ApproximateLowerBoundUnsupported) {
-  const auto policy = NewDiva(kInfixBitsPerKey);
+TEST_P(DivaFilterPolicyTest, ApproximateLowerBoundUnsupported) {
+  const auto policy = Diva(kInfixBitsPerKey);
   auto reader = Build(*policy, {"a", "b"});
   KeyLowerBound bound;
   // Targets of only zero bytes, which an all-zero key could follow.
@@ -238,8 +250,8 @@ TEST_F(DivaFilterPolicyTest, ApproximateLowerBoundUnsupported) {
   ASSERT_FALSE(garbage->GetApproximateLowerBound("a", &bound));
 }
 
-TEST_F(DivaFilterPolicyTest, PointAndRangeQueries) {
-  const auto policy = NewDiva(kInfixBitsPerKey);
+TEST_P(DivaFilterPolicyTest, PointAndRangeQueries) {
+  const auto policy = Diva(kInfixBitsPerKey);
   // Adjacent repeats (several versions of one user key) collapse to one key.
   const std::vector<std::string> keys = {"apple",  "apple",  "banana",
                                          "cherry", "cherry", "grape"};
@@ -261,7 +273,7 @@ TEST_F(DivaFilterPolicyTest, PointAndRangeQueries) {
 // needs, so the parsed block frees the filter block and counts the reader's
 // memory in its place, and still answers queries; a Bloom reader reads the
 // block in place, so the block stays.
-TEST_F(DivaFilterPolicyTest, ParsedBlockReleasesFilterBlock) {
+TEST_P(DivaFilterPolicyTest, ParsedBlockReleasesFilterBlock) {
   Random rnd(17);
   std::set<std::string> distinct;
   while (distinct.size() < 3000) {
@@ -276,7 +288,7 @@ TEST_F(DivaFilterPolicyTest, ParsedBlockReleasesFilterBlock) {
         &policy, BlockContents(std::move(owned), filter_.size()));
   };
 
-  const auto diva = NewDiva(kInfixBitsPerKey);
+  const auto diva = Diva(kInfixBitsPerKey);
   auto parsed = parse(*diva);
   ASSERT_TRUE(parsed->own_bytes());
   // The block's bytes are gone (an empty BlockContents still counts its own
@@ -300,8 +312,8 @@ TEST_F(DivaFilterPolicyTest, ParsedBlockReleasesFilterBlock) {
   }
 }
 
-TEST_F(DivaFilterPolicyTest, UnusableContentsMatchEverything) {
-  const auto policy = NewDiva(kInfixBitsPerKey);
+TEST_P(DivaFilterPolicyTest, UnusableContentsMatchEverything) {
+  const auto policy = Diva(kInfixBitsPerKey);
   const std::string garbage(64, 'x');
   std::unique_ptr<FilterBitsReader> reader(
       policy->GetFilterBitsReader(garbage));
@@ -310,8 +322,8 @@ TEST_F(DivaFilterPolicyTest, UnusableContentsMatchEverything) {
   ASSERT_TRUE(reader->RangeMayMatch("a", "b"));
 }
 
-TEST_F(DivaFilterPolicyTest, ZeroBitsPerKeyBuildsNoFilter) {
-  const auto policy = NewDiva(0);
+TEST_P(DivaFilterPolicyTest, ZeroBitsPerKeyBuildsNoFilter) {
+  const auto policy = Diva(0);
   BlockBasedTableOptions table_options;
   std::unique_ptr<FilterBitsBuilder> builder(
       policy->GetBuilderWithContext(FilterBuildingContext(table_options)));
@@ -319,9 +331,9 @@ TEST_F(DivaFilterPolicyTest, ZeroBitsPerKeyBuildsNoFilter) {
 }
 
 // The id an OPTIONS file records must rebuild an equivalent policy.
-TEST_F(DivaFilterPolicyTest, IdRoundTrip) {
-  std::shared_ptr<const FilterPolicy> policy(
-      NewDivaFilterPolicy(kSeed, kInfixBitsPerKey, 0.9 /* load_factor */));
+TEST_P(DivaFilterPolicyTest, IdRoundTrip) {
+  std::shared_ptr<const FilterPolicy> policy(NewDivaFilterPolicy(
+      kSeed, kInfixBitsPerKey, 0.9 /* load_factor */, GetParam()));
   ConfigOptions config_options;
   config_options.ignore_unsupported_options = false;
   std::shared_ptr<const FilterPolicy> rebuilt;
@@ -333,7 +345,7 @@ TEST_F(DivaFilterPolicyTest, IdRoundTrip) {
 }
 
 // The short form names only the infix bits; the rest take their defaults.
-TEST_F(DivaFilterPolicyTest, ShortConfigString) {
+TEST_P(DivaFilterPolicyTest, ShortConfigString) {
   ConfigOptions config_options;
   config_options.ignore_unsupported_options = false;
   std::shared_ptr<const FilterPolicy> policy;
@@ -345,9 +357,13 @@ TEST_F(DivaFilterPolicyTest, ShortConfigString) {
   std::shared_ptr<const FilterPolicy> defaulted(
       NewDivaFilterPolicy(DivaFilterPolicy::kDefaultRngSeed, 9));
   EXPECT_EQ(policy->GetId(), defaulted->GetId());
+  // Diva++ is the default mode.
+  EXPECT_TRUE(policy->GetId().ends_with(DivaFilterPolicy::kDivaPlusPlusSuffix));
 }
 
-class DBDivaFilterTest : public DBTestBase {
+// Runs in both Diva modes, like DivaFilterPolicyTest.
+class DBDivaFilterTest : public DBTestBase,
+                         public testing::WithParamInterface<bool> {
  public:
   DBDivaFilterTest()
       : DBTestBase("db_diva_filter_test", /*env_do_fsync=*/false) {}
@@ -359,6 +375,10 @@ class DBDivaFilterTest : public DBTestBase {
     }
   }
 
+  std::shared_ptr<const FilterPolicy> Diva(uint32_t infix_bits_per_key) {
+    return NewDiva(infix_bits_per_key, GetParam());
+  }
+
   Options DivaOptions() {
     Options options = CurrentOptions();
     options.create_if_missing = true;
@@ -366,7 +386,7 @@ class DBDivaFilterTest : public DBTestBase {
     options.num_levels = 4;
     options.statistics = CreateDBStatistics();
     BlockBasedTableOptions table_options;
-    table_options.filter_policy = NewDiva(kInfixBitsPerKey);
+    table_options.filter_policy = Diva(kInfixBitsPerKey);
     options.table_factory.reset(NewBlockBasedTableFactory(table_options));
     return options;
   }
@@ -545,7 +565,7 @@ class DBDivaFilterTest : public DBTestBase {
 
 // Every SST file's table reader bounds the keys of that file, through the
 // filter block it holds or reads.
-TEST_F(DBDivaFilterTest, TableApproximateLowerBound) {
+TEST_P(DBDivaFilterTest, TableApproximateLowerBound) {
   OpenWithDiva();
   Random rnd(302);
   // Three overlapping files in L0, then the same pushed down a level.
@@ -595,7 +615,7 @@ TEST_F(DBDivaFilterTest, TableApproximateLowerBound) {
   check_files(1);
 }
 
-TEST_F(DBDivaFilterTest, PointLookups) {
+TEST_P(DBDivaFilterTest, PointLookups) {
   OpenWithDiva();
   for (int i = 0; i < 2000; i += 2) {
     ASSERT_OK(Put(Key(i), "v" + std::to_string(i)));
@@ -616,7 +636,7 @@ TEST_F(DBDivaFilterTest, PointLookups) {
 // file's key range. Counters are per table Seek. With deferred seeks the merge
 // would not seek those files at all, so this checks the table's own range
 // check with them off.
-TEST_F(DBDivaFilterTest, BoundedSeekSkipsFiles) {
+TEST_P(DBDivaFilterTest, BoundedSeekSkipsFiles) {
   OpenWithDiva();
   ReadOptions no_deferral;
   no_deferral.deferred_seeks = false;
@@ -668,7 +688,7 @@ TEST_F(DBDivaFilterTest, BoundedSeekSkipsFiles) {
 // GetFilterBitsReader() answers a block it does not recognize with a filter
 // that matches everything: a serialization bug would leave reads correct but
 // unfiltered, which only the counters can see.
-TEST_F(DBDivaFilterTest, FilterSurvivesReopen) {
+TEST_P(DBDivaFilterTest, FilterSurvivesReopen) {
   OpenWithDiva();
   // One file with a gap: "a" + Key(100) .. "a" + Key(199) are missing.
   for (int i = 0; i < 300; ++i) {
@@ -692,7 +712,7 @@ TEST_F(DBDivaFilterTest, FilterSurvivesReopen) {
 
 // Keys made only of 0x00 bytes, and lookups and seeks from them. Each file
 // holds one such key.
-TEST_F(DBDivaFilterTest, AllZeroKeys) {
+TEST_P(DBDivaFilterTest, AllZeroKeys) {
   OpenWithDiva();
   const std::string zero2(2, '\0');
   ASSERT_OK(Put(zero2, "z2"));
@@ -716,7 +736,7 @@ TEST_F(DBDivaFilterTest, AllZeroKeys) {
 // The seek path shares one filter_checked flag between the prefix filter and
 // the range filter. A prefix-filter check on a table with no range filter
 // must not be counted as a range-filter true positive.
-TEST_F(DBDivaFilterTest, PrefixFilterSeekIsNotARangeFilterPositive) {
+TEST_P(DBDivaFilterTest, PrefixFilterSeekIsNotARangeFilterPositive) {
   Options options = CurrentOptions();
   options.create_if_missing = true;
   options.disable_auto_compactions = true;
@@ -745,7 +765,7 @@ TEST_F(DBDivaFilterTest, PrefixFilterSeekIsNotARangeFilterPositive) {
 }
 
 // Without iterate_upper_bound the range filter is not consulted.
-TEST_F(DBDivaFilterTest, UnboundedSeekDoesNotUseFilter) {
+TEST_P(DBDivaFilterTest, UnboundedSeekDoesNotUseFilter) {
   OpenWithDiva();
   for (int i = 0; i < 100; ++i) {
     ASSERT_OK(Put("a" + Key(i), "v"));
@@ -763,7 +783,7 @@ TEST_F(DBDivaFilterTest, UnboundedSeekDoesNotUseFilter) {
 
 // Reads of tables with a range filter skip range tombstones, so DeleteRange()
 // is rejected, alone or in a batch.
-TEST_F(DBDivaFilterTest, DeleteRangeIsRejected) {
+TEST_P(DBDivaFilterTest, DeleteRangeIsRejected) {
   OpenWithDiva();
   ASSERT_OK(Put(Key(1), "v"));
   Status s = db_->DeleteRange(WriteOptions(), db_->DefaultColumnFamily(),
@@ -780,7 +800,7 @@ TEST_F(DBDivaFilterTest, DeleteRangeIsRejected) {
 
 // Tools that reopen a DB from its OPTIONS file (LoadLatestOptions, ldb,
 // sst_dump) must rebuild the filter policy rather than lose it.
-TEST_F(DBDivaFilterTest, OptionsFileRoundTrip) {
+TEST_P(DBDivaFilterTest, OptionsFileRoundTrip) {
   OpenWithDiva();
   ASSERT_OK(Put(Key(1), "v"));
   ASSERT_OK(Flush());
@@ -803,7 +823,7 @@ TEST_F(DBDivaFilterTest, OptionsFileRoundTrip) {
   EXPECT_EQ(table_options->filter_policy->GetId(), expected);
 }
 
-TEST_F(DBDivaFilterTest, UnsupportedOptionsAreRejected) {
+TEST_P(DBDivaFilterTest, UnsupportedOptionsAreRejected) {
   const auto check_rejected = [&](Options options) {
     options.create_if_missing = true;
     Status s = TryReopen(options);
@@ -811,7 +831,7 @@ TEST_F(DBDivaFilterTest, UnsupportedOptionsAreRejected) {
   };
   // Diva with the given table options.
   const auto with_table_options = [&](BlockBasedTableOptions table_options) {
-    table_options.filter_policy = NewDiva(kInfixBitsPerKey);
+    table_options.filter_policy = Diva(kInfixBitsPerKey);
     Options options = DivaOptions();
     options.table_factory.reset(NewBlockBasedTableFactory(table_options));
     return options;
@@ -858,7 +878,7 @@ TEST_F(DBDivaFilterTest, UnsupportedOptionsAreRejected) {
 
 // Random overwrites and deletes spread over several levels; every point lookup
 // and bounded scan must match a model of the expected contents.
-TEST_F(DBDivaFilterTest, RandomizedMatchesModel) {
+TEST_P(DBDivaFilterTest, RandomizedMatchesModel) {
   const uint32_t seed = static_cast<uint32_t>(
       std::chrono::system_clock::now().time_since_epoch().count());
   SCOPED_TRACE("seed=" + std::to_string(seed));
@@ -916,7 +936,7 @@ TEST_F(DBDivaFilterTest, RandomizedMatchesModel) {
 // A Seek() postpones the files whose keys all come after the first key found,
 // and seeks them only once the scan reaches them. Their keys are returned in
 // order, and none is returned twice.
-TEST_F(DBDivaFilterTest, DeferredSeeksPostponeLaterFiles) {
+TEST_P(DBDivaFilterTest, DeferredSeeksPostponeLaterFiles) {
   for (bool l0 : {true, false}) {
     SCOPED_TRACE(l0 ? "L0 files" : "one file per level");
     ReopenEmptyWithDiva();
@@ -988,7 +1008,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksPostponeLaterFiles) {
 
 // Files whose keys interleave: a postponed file is sought as soon as its
 // bound is no longer after the smallest key.
-TEST_F(DBDivaFilterTest, DeferredSeeksInterleavedFiles) {
+TEST_P(DBDivaFilterTest, DeferredSeeksInterleavedFiles) {
   for (bool l0 : {true, false}) {
     SCOPED_TRACE(l0 ? "L0 files" : "one file per level");
     ReopenEmptyWithDiva();
@@ -1015,7 +1035,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksInterleavedFiles) {
 // Versions of a key spread over several children: an older value in a lower
 // level, a newer value or a delete above it. Postponing a child must never
 // let an older version through.
-TEST_F(DBDivaFilterTest, DeferredSeeksVersionsAcrossChildren) {
+TEST_P(DBDivaFilterTest, DeferredSeeksVersionsAcrossChildren) {
   OpenWithDiva();
   std::map<std::string, std::string> model;
   const auto put = [&](const std::string& key, const std::string& value) {
@@ -1058,7 +1078,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksVersionsAcrossChildren) {
 
 // Upper bounds at, inside and past keys, keys that are prefixes of other keys
 // and of the bound, and empty and all-zero seek targets.
-TEST_F(DBDivaFilterTest, DeferredSeeksPrefixesAndBounds) {
+TEST_P(DBDivaFilterTest, DeferredSeeksPrefixesAndBounds) {
   for (bool l0 : {true, false}) {
     SCOPED_TRACE(l0 ? "L0 files" : "one file per level");
     ReopenEmptyWithDiva();
@@ -1090,7 +1110,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksPrefixesAndBounds) {
 }
 
 // Changing direction or seeking again after children were postponed.
-TEST_F(DBDivaFilterTest, DeferredSeeksDirectionChangesAndReseeks) {
+TEST_P(DBDivaFilterTest, DeferredSeeksDirectionChangesAndReseeks) {
   for (bool l0 : {true, false}) {
     SCOPED_TRACE(l0 ? "L0 files" : "one file per level");
     ReopenEmptyWithDiva();
@@ -1155,7 +1175,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksDirectionChangesAndReseeks) {
 
 // A snapshot read sees the versions it should, whichever children hold the
 // newer ones.
-TEST_F(DBDivaFilterTest, DeferredSeeksSnapshot) {
+TEST_P(DBDivaFilterTest, DeferredSeeksSnapshot) {
   OpenWithDiva();
   std::map<std::string, std::string> model;
   WriteDisjointFiles(/*l0=*/false, &model);
@@ -1195,7 +1215,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksSnapshot) {
 // With lsm_range_filter off, tables give no bounds and skip their range
 // check; point lookups still use the filter. A level still says it is empty
 // when no file holds keys past the target, from its file key ranges.
-TEST_F(DBDivaFilterTest, LsmRangeFilterOff) {
+TEST_P(DBDivaFilterTest, LsmRangeFilterOff) {
   OpenWithDiva();
   std::map<std::string, std::string> model;
   WriteDisjointFiles(/*l0=*/false, &model);
@@ -1225,7 +1245,7 @@ TEST_F(DBDivaFilterTest, LsmRangeFilterOff) {
 
 // Without a range filter iterators keep the regular Seek(): they record no
 // deferred seek stats, with or without range tombstones.
-TEST_F(DBDivaFilterTest, DeferredSeeksNeedRangeFilter) {
+TEST_P(DBDivaFilterTest, DeferredSeeksNeedRangeFilter) {
   Options options = DivaOptions();
   BlockBasedTableOptions table_options;
   table_options.filter_policy.reset(NewBloomFilterPolicy(10));
@@ -1262,7 +1282,7 @@ TEST_F(DBDivaFilterTest, DeferredSeeksNeedRangeFilter) {
 // with keys that share prefixes and gather in different files. Every scan, in
 // every setting and with a snapshot, matches a model, and scans that switch
 // direction match it too.
-TEST_F(DBDivaFilterTest, RandomizedDeferredSeeksMatchModel) {
+TEST_P(DBDivaFilterTest, RandomizedDeferredSeeksMatchModel) {
   const uint32_t seed = static_cast<uint32_t>(
       std::chrono::system_clock::now().time_since_epoch().count());
   SCOPED_TRACE("seed=" + std::to_string(seed));
@@ -1370,6 +1390,43 @@ TEST_F(DBDivaFilterTest, RandomizedDeferredSeeksMatchModel) {
   EXPECT_EQ(c.fallback, 0);
   db_->ReleaseSnapshot(snapshot);
 }
+
+// Readers decode filters of either mode, so a DB keeps using the filters of
+// its existing files after its policy switches to the other mode.
+TEST_P(DBDivaFilterTest, ModeChangeKeepsFilters) {
+  OpenWithDiva();
+  const auto write_file = [&](const std::string& prefix) {
+    for (int i = 0; i < 100; ++i) {
+      ASSERT_OK(Put(prefix + Key(i), "v"));
+    }
+    ASSERT_OK(Flush());
+  };
+  write_file("a");
+  Options options = DivaOptions();
+  BlockBasedTableOptions table_options;
+  table_options.filter_policy = NewDiva(kInfixBitsPerKey, !GetParam());
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  options_statistics_ = options.statistics;
+  Reopen(options);
+  write_file("c");
+
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(Get("a" + Key(i)), "v");
+    ASSERT_EQ(Get("c" + Key(i)), "v");
+  }
+  Pop(RANGE_FILTER_USEFUL);
+  // Each file's own filter rules it out of a range between them.
+  const std::string upper_bound = "b9";
+  ReadOptions read_options;
+  read_options.deferred_seeks = false;
+  ASSERT_TRUE(ScanEntries(read_options, "b", &upper_bound, SIZE_MAX).empty());
+  EXPECT_EQ(Pop(RANGE_FILTER_USEFUL), 2);
+}
+
+INSTANTIATE_TEST_CASE_P(DivaModes, DivaFilterPolicyTest, testing::Bool(),
+                        DivaModeName);
+INSTANTIATE_TEST_CASE_P(DivaModes, DBDivaFilterTest, testing::Bool(),
+                        DivaModeName);
 
 }  // namespace ROCKSDB_NAMESPACE
 

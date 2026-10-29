@@ -218,8 +218,10 @@ FilterPolicy* NewRibbonFilterPolicy(double bloom_equivalent_bits_per_key,
 // forward Seek() with ReadOptions::iterate_upper_bound set skips SST files
 // whose filter rules out any key in the range.
 // - rng_seed: randomness seed.
-// - infix_bits_per_key: the memory budget for the infix part (0 disables the
-//   filter).
+// - infix_bits_per_key: bits per slot w, including Diva's 1-bit delimiter,
+//   so each key keeps w - 1 bits (0 disables the filter). Diva bounds point
+//   FPR by 2 * 2^-(w-1) and ranges by twice that; about
+//   (w + 1) / load_factor + 1 bits per key.
 // - load_factor: the load factor for the infix store of Diva.
 // - diva_plus_plus: build Diva++, which stores the
 //   keys whose infixes collide in a small trie, for fewer false positives on
